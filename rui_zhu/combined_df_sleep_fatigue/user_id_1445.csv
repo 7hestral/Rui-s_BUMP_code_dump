@@ -1,0 +1,3 @@
+,answer_text,date,user_id_x,hr_average,rmssd,breath_average,score,user_id_y,birth_date
+1,3,2021-12-23,1445,56.38,55.0,16.0,47,1445,NA
+0,2,2021-12-28,1445,55.29,64.0,16.125,63,1445,NA

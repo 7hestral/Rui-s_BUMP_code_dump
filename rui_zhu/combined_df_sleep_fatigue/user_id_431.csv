@@ -1,0 +1,4 @@
+,answer_text,date,user_id_x,hr_average,rmssd,breath_average,score,user_id_y,birth_date
+1,3,2021-08-28,431,66.25,57.0,16.875,24,431,NA
+2,5,2021-08-30,431,64.91,63.0,16.5,25,431,NA
+0,3,2021-09-02,431,63.91,58.0,16.25,44,431,NA

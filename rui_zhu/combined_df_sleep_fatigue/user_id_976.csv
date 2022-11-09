@@ -1,0 +1,3 @@
+,answer_text,date,user_id_x,hr_average,rmssd,breath_average,score,user_id_y,birth_date
+0,1,2022-01-12,976,74.29,29.0,14.875,70,976,2022-03-16
+1,2,2022-03-07,976,65.06,60.0,15.375,84,976,2022-03-16

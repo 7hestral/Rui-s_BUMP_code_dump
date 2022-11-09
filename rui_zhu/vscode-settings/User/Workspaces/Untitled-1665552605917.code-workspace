@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"uri": "vscode-remote://run-63464fe0013fbe06486a33d9.domino-compute.svc.cluster.local:80/mnt"
+		},
+		{
+			"uri": "vscode-remote://run-63464fe0013fbe06486a33d9.domino-compute.svc.cluster.local:80/domino/datasets/local/Bump"
+		}
+	],
+	"remoteAuthority": "run-63464fe0013fbe06486a33d9.domino-compute.svc.cluster.local:80",
+	"settings": {}
+}

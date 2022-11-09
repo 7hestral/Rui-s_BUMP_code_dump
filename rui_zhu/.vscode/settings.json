@@ -1,0 +1,6 @@
+{
+    "python.pythonPath": "/opt/conda/bin/python",
+    "files.associations": {
+        "*.Rmd": "rmd",
+    },
+}
