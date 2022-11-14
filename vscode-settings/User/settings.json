@@ -1,8 +1,0 @@
-{
-    "python.dataScience.askForKernelRestart": false,
-    "editor.fontSize": 14,
-    "files.associations": {
-        "*.Rmd": "rmd",
-    },
-    "terminal.integrated.inheritEnv": false,
-}
