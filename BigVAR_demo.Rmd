@@ -1,27 +1,4 @@
 
-```{r}
-library(reticulate)
-py_install("pandas")
-# # use_condaenv("/mnt/rui_venv/venv2")
-# # create a new environment 
-# conda_create("/mnt/rui_venv/venv3")
-# 
-# # install SciPy
-# conda_install("/mnt/rui_venv/venv3", "pandas")
-```
-
-```{r}
-# use_condaenv("/mnt/rui_venv/venv3")
-y <- head(cars)
-```
-
-Print the variable `y` in Python:
-
-```{python}
-import pandas as pd
-print(r.y)
-```
-
 
 ```{r}
 
@@ -39,5 +16,83 @@ plot(results)
 ```{r}
 Y
 class(Y)
+```
+
+```{r}
+library("tidyverse")
+df = read.csv('/mnt/Causality_project_BUMP/imputed_df_sleep_fatigue/kalman_impute_df_userid_1032.csv')
+
+df$birth_date = as.Date(df$birth_date)
+df$date = as.Date(df$date)
+df
+
+```
+```{r}
+break_points = c(0,
+                 17,
+                 34,
+                 52,
+                 70,
+                 88,
+                 105,
+                 120,
+                 134,
+                 146,
+                 154,
+                 160,
+                 166,
+                 172,
+                 177,
+                 182,
+                 187,
+                 192,
+                 197,
+                 202,
+                 207,
+                 212,
+                 217,
+                 222,
+                 227,
+                 232,
+                 237,
+                 242,
+                 247,
+                 252,
+                 257,
+                 262)
+
+v_lines_d = data.frame(X=break_points)
+v_lines_d = df %>% select(X, date) %>% inner_join(v_lines_d)
+```
+
+```{r}
+library(reshape)
+used_variables_df = df %>% select(date, rmssd, hr_average, answer_text)
+melted_used_variables = melt(used_variables_df, id=c("date"))
+melted_used_variables
+```
+
+```{r}
+ggplot(melted_used_variables, aes(date, value, color=variable)) + geom_point() + geom_vline(xintercept = df$birth_date) + geom_vline(xintercept = v_lines_d$date, linetype='dashed', color='blue', size=0.3) + theme_bw()
+```
+```{r}
+# for (i in 1:12) {
+#   #print(break_points[i])
+#   print(i)
+#   curr_df = df %>% filter((X>=break_points[i]) & (X <= break_points[i+3]))
+#   curr_df = curr_df %>% select(rmssd, hr_average, answer_text)
+#   curr_mat = data.matrix(curr_df)
+#   mod1<-constructModel(curr_mat,p=4,"Basic",gran=c(150,10),h=1,cv="Rolling",verbose=FALSE,IC=TRUE,model.controls=list(intercept=TRUE))
+#   results=cv.BigVAR(mod1)
+#   print(SparsityPlot.BigVAR.results(results))
+# 
+# }
+curr_df = df %>% filter((X>=break_points[9]) & (X <= break_points[11]))
+curr_df = curr_df %>% select(rmssd, hr_average, answer_text)
+curr_mat = data.matrix(curr_df)
+mod1<-constructModel(curr_mat,p=4,"Basic",gran=c(150,10),h=1,cv="Rolling",verbose=FALSE,IC=TRUE,model.controls=list(intercept=TRUE))
+results=cv.BigVAR(mod1)
+print(SparsityPlot.BigVAR.results(results))
+#df %>% filter((X>=break_points[4]) & (X <= break_points[5]))
 ```
 

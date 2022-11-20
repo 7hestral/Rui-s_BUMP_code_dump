@@ -12,9 +12,10 @@
 # install.packages("devtools")
 
 # Step 5
-# library(devtools)
-# install_github("wbnicholson/BigVAR/BigVAR")
-# install.packages('Rcpp')
+install.packages('Rcpp')
+library(devtools)
+install_github("wbnicholson/BigVAR/BigVAR")
+
 library("BigVAR")
 options(vsc.plot = FALSE)
 data(Y)
