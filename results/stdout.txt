@@ -1,5 +1,0 @@
-info  code-server 3.2.0 fd36a99a4c78669970ebc4eb05768293b657716f
-info  HTTP server listening on http://0.0.0.0:8888
-info    - No authentication
-info    - Not serving HTTPS
-info  Automatic updates are enabled
