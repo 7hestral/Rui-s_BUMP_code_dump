@@ -1,4 +1,0 @@
-,date,user_id_x,answer_text,hr_average,rmssd,breath_average,score,user_id_y,birth_date
-0,2021-07-02,161,1,75.72,14.0,14.5,71,161,NaN
-1,2021-07-03,161,,75.14,16.0,14.375,83,161,NaN
-2,2021-07-04,161,1,80.22,15.0,15.125,62,161,NaN
