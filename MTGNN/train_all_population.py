@@ -13,7 +13,8 @@ from trainer import Optim
 from sequence_dataset import SequenceDataset
 from torch.utils.data import ConcatDataset
 from torch.utils.data import DataLoader 
-def evaluate(dataloader, model, evaluateL2, evaluateL1, device):
+from lstm import LSTMClassifier
+def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
     model.eval()
     total_loss = 0
     total_loss_l1 = 0
@@ -25,8 +26,9 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device):
         X = X.to(device)
         Y = Y.to(device)
         feature_size = X.shape[-1]
-        X = torch.unsqueeze(X,dim=1)
-        X = X.transpose(2,3)
+        if model_type == 'GNN':
+            X = torch.unsqueeze(X,dim=1)
+            X = X.transpose(2,3)
         with torch.no_grad():
             output = model(X)
         output = torch.squeeze(output)
@@ -60,7 +62,7 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device):
     return rse, rae, correlation
 
 
-def train(dataloader, model, criterion, optim, device):
+def train(dataloader, model, criterion, optim, device, model_type):
     model.train()
     total_loss = 0
     n_samples = 0
@@ -70,27 +72,35 @@ def train(dataloader, model, criterion, optim, device):
         Y = Y.to(device)
         feature_size = X.shape[-1]
         model.zero_grad()
-        X = torch.unsqueeze(X,dim=1)
-        X = X.transpose(2,3)
-        if iter % args.step_size == 0:
-            perm = np.random.permutation(range(args.num_nodes))
-        num_sub = int(args.num_nodes / args.num_split)
-
-        for j in range(args.num_split):
-            if j != args.num_split - 1:
-                id = perm[j * num_sub:(j + 1) * num_sub]
-            else:
-                id = perm[j * num_sub:]
-            id = torch.tensor(id).to(device)
-            tx = X[:, :, id, :]
-            ty = Y[:, id]
-            output = model(tx,id)
+        if model_type == 'GNN':
+            X = torch.unsqueeze(X,dim=1)
+            X = X.transpose(2,3)
+            if iter % args.step_size == 0:
+                perm = np.random.permutation(range(args.num_nodes))
+            num_sub = int(args.num_nodes / args.num_split)
+            for j in range(args.num_split):
+                if j != args.num_split - 1:
+                    id = perm[j * num_sub:(j + 1) * num_sub]
+                else:
+                    id = perm[j * num_sub:]
+                id = torch.tensor(id).to(device)
+                tx = X[:, :, id, :]
+                ty = Y[:, id]
+                output = model(tx,id)
+                output = torch.squeeze(output)
+                scale = np.ones(feature_size)
+                scale = torch.from_numpy(scale).float().to(device)
+                scale = scale.expand(output.size(0), feature_size)
+                scale = scale[:,id]
+                loss = criterion(output * scale, ty * scale)
+                loss.backward()
+                total_loss += loss.item()
+                n_samples += (output.size(0) * feature_size)
+                grad_norm = optim.step()
+        elif model_type == "LSTM":
+            output = model(X)
             output = torch.squeeze(output)
-            scale = np.ones(feature_size)
-            scale = torch.from_numpy(scale).float().to(device)
-            scale = scale.expand(output.size(0), feature_size)
-            scale = scale[:,id]
-            loss = criterion(output * scale, ty * scale)
+            loss = criterion(output, Y)
             loss.backward()
             total_loss += loss.item()
             n_samples += (output.size(0) * feature_size)
@@ -149,7 +159,7 @@ args = parser.parse_args()
 device = torch.device(args.device)
 torch.set_num_threads(3)
 
-def main(list_users, name):
+def main(list_users, name, model_type="GNN"):
     torch.manual_seed(42)
     train_dataset_lst = []
     val_dataset_lst = []
@@ -169,21 +179,24 @@ def main(list_users, name):
     train_dataloader = DataLoader(aggregated_train_dataset, batch_size=args.batch_size, shuffle=True)
     val_dataloader = DataLoader(aggregated_val_dataset, batch_size=args.batch_size, shuffle=False)
     # args.data = f'/mnt/results/user_{selected_user}_activity_bodyport_hyperimpute.csv'
-    args.save = f'/mnt/results/model/model_{name}.pt'
+    args.save = f'/mnt/results/model/model_{name}_{model_type}.pt'
     print(vars(args))
     # Data = DataLoaderS(args.data, 0.8, 0.2, device, args.horizon, args.seq_in_len, args.normalize)
-
-    model = gtnet(args.gcn_true, args.buildA_true, args.gcn_depth, args.num_nodes,
-                  device, dropout=args.dropout, subgraph_size=args.subgraph_size,
-                  node_dim=args.node_dim, dilation_exponential=args.dilation_exponential,
-                  conv_channels=args.conv_channels, residual_channels=args.residual_channels,
-                  skip_channels=args.skip_channels, end_channels= args.end_channels,
-                  seq_length=args.seq_in_len, in_dim=args.in_dim, out_dim=args.seq_out_len,
-                  layers=args.layers, propalpha=args.propalpha, tanhalpha=args.tanhalpha, layer_norm_affline=False)
+    if model_type == "GNN":
+        model = gtnet(args.gcn_true, args.buildA_true, args.gcn_depth, args.num_nodes,
+                    device, dropout=args.dropout, subgraph_size=args.subgraph_size,
+                    node_dim=args.node_dim, dilation_exponential=args.dilation_exponential,
+                    conv_channels=args.conv_channels, residual_channels=args.residual_channels,
+                    skip_channels=args.skip_channels, end_channels= args.end_channels,
+                    seq_length=args.seq_in_len, in_dim=args.in_dim, out_dim=args.seq_out_len,
+                    layers=args.layers, propalpha=args.propalpha, tanhalpha=args.tanhalpha, layer_norm_affline=False)
+    elif model_type == "LSTM":
+        model = LSTMClassifier(feature_size=args.num_nodes, n_state=args.num_nodes, hidden_size=30, rnn='LSTM')
     model = model.to(device)
 
     print(args)
-    print('The recpetive field size is', model.receptive_field)
+    if model_type == 'GNN':
+        print('The recpetive field size is', model.receptive_field)
     nParams = sum([p.nelement() for p in model.parameters()])
     print('Number of model parameters is', nParams, flush=True)
 
@@ -205,8 +218,8 @@ def main(list_users, name):
         print('begin training')
         for epoch in range(1, args.epochs + 1):
             epoch_start_time = time.time()
-            train_loss = train(train_dataloader, model, criterion, optim, device)
-            val_loss, val_rae, val_corr = evaluate(val_dataloader, model, evaluateL2, evaluateL1, device)
+            train_loss = train(train_dataloader, model, criterion, optim, device, model_type)
+            val_loss, val_rae, val_corr = evaluate(val_dataloader, model, evaluateL2, evaluateL1, device, model_type)
             print(
                 '| end of epoch {:3d} | time: {:5.2f}s | train_loss {:5.4f} | valid rse {:5.4f} | valid rae {:5.4f} | valid corr  {:5.4f}'.format(
                     epoch, (time.time() - epoch_start_time), train_loss, val_loss, val_rae, val_corr), flush=True)
@@ -229,7 +242,7 @@ def main(list_users, name):
     with open(args.save, 'rb') as f:
         model = torch.load(f)
 
-    vtest_acc, vtest_rae, vtest_corr = evaluate(val_dataloader, model, evaluateL2, evaluateL1, device)
+    vtest_acc, vtest_rae, vtest_corr = evaluate(val_dataloader, model, evaluateL2, evaluateL1, device, model_type)
     # test_acc, test_rae, test_corr = evaluate(Data, Data.test[0], Data.test[1], model, evaluateL2, evaluateL1,
     #                                      args.batch_size)
     # print("final test rse {:5.4f} | test rae {:5.4f} | test corr {:5.4f}".format(test_acc, test_rae, test_corr))
@@ -294,7 +307,7 @@ if __name__ == "__main__":
     corr = []
     num_runs = 1
     for i in range(num_runs):
-        val_acc, val_rae, val_corr, test_acc, test_rae, test_corr = main(list_users_above_criteria, 'all_pop')
+        val_acc, val_rae, val_corr, test_acc, test_rae, test_corr = main(list_users_above_criteria, 'all_pop', model_type='LSTM')
         vacc.append(val_acc)
         vrae.append(val_rae)
         vcorr.append(val_corr)
@@ -307,28 +320,5 @@ if __name__ == "__main__":
     print("valid\trse\trae\tcorr")
     print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(vacc), np.mean(vrae), np.mean(vcorr)))
     print("std\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.std(vacc), np.std(vrae), np.std(vcorr)))
-    # not_available = []
-    # for user in list_users_above_criteria:
-    #     try:
-    #         for i in range(num_runs):
-    #             val_acc, val_rae, val_corr, test_acc, test_rae, test_corr = main(user)
-    #             vacc.append(val_acc)
-    #             vrae.append(val_rae)
-    #             vcorr.append(val_corr)
-    #             acc.append(test_acc)
-    #             rae.append(test_rae)
-    #             corr.append(test_corr)
-    #         print('\n\n')
-    #         print(f'{num_runs} runs average')
-    #         print('\n\n')
-    #         print("valid\trse\trae\tcorr")
-    #         print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(vacc), np.mean(vrae), np.mean(vcorr)))
-    #         print("std\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.std(vacc), np.std(vrae), np.std(vcorr)))
-    #     except:
-    #         not_available.append(user)
-    # print("not available", not_available)
-    # print('\n\n')
-    # print("test\trse\trae\tcorr")
-    # print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(acc), np.mean(rae), np.mean(corr)))
-    # print("std\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.std(acc), np.std(rae), np.std(corr)))
+
 
