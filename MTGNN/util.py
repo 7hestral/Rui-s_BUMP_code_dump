@@ -301,6 +301,25 @@ def load_node_feature(path):
 def normal_std(x):
     return x.std() * np.sqrt((len(x) - 1.) / (len(x)))
 
-
+def min_max_normalization(original_df_lst, min_value_lst=None, max_value_lst=None):
+    # find min and max across population
+    _, feature_size = original_df_lst[0].shape
+    if min_value_lst is None:
+        min_value_lst = [99999] * feature_size
+        max_value_lst = [-99999] * feature_size
+        for target_feature in range(feature_size):
+            for curr_user_mat in original_df_lst:
+                curr_max = np.max(curr_user_mat[:, target_feature])
+                curr_min = np.min(curr_user_mat[:, target_feature])
+                if min_value_lst[target_feature] > curr_min:
+                    min_value_lst[target_feature] = curr_min
+                if max_value_lst[target_feature] < curr_max:
+                    max_value_lst[target_feature] = curr_max
+    normalized_data_lst = []
+    for curr_user_mat in original_df_lst:
+        for target_feature in range(feature_size):
+            curr_user_mat[:, target_feature] = (curr_user_mat[:, target_feature] - min_value_lst[target_feature]) / (max_value_lst[target_feature] - min_value_lst[target_feature])
+        normalized_data_lst.append(curr_user_mat)
+    return normalized_data_lst, min_value_lst, max_value_lst
 
             

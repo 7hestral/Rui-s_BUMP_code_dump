@@ -86,7 +86,7 @@ class gtnet(nn.Module):
         self.idx = torch.arange(self.num_nodes).to(device)
 
 
-    def forward(self, input, idx=None):
+    def forward(self, input, idx=None, intermediate_output=False):
         # print(input.shape)
         seq_len = input.size(3)
         assert seq_len==self.seq_length, 'input sequence length not equal to preset sequence length'
@@ -131,6 +131,8 @@ class gtnet(nn.Module):
 
         skip = self.skipE(x) + skip
         x = F.relu(skip)
-        x = F.relu(self.end_conv_1(x))
-        x = self.end_conv_2(x)
+        temp = F.relu(self.end_conv_1(x))
+        x = self.end_conv_2(temp)
+        if intermediate_output:
+            return temp
         return x

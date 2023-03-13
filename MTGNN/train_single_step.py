@@ -275,24 +275,24 @@ if __name__ == "__main__":
     num_runs = 1
     not_available = []
     for user in list_users_above_criteria:
-        try:
-            for i in range(num_runs):
-                val_acc, val_rae, val_corr, test_acc, test_rae, test_corr = main(user)
-                vacc.append(val_acc)
-                vrae.append(val_rae)
-                vcorr.append(val_corr)
-                acc.append(test_acc)
-                rae.append(test_rae)
-                corr.append(test_corr)
-            print('\n\n')
-            print(f'{num_runs} runs average')
-            print('\n\n')
-            print("valid\trse\trae\tcorr")
-            print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(vacc), np.mean(vrae), np.mean(vcorr)))
-            print("std\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.std(vacc), np.std(vrae), np.std(vcorr)))
-        except:
-            not_available.append(user)
-    print("not available", not_available)
+        # try:
+        for i in range(num_runs):
+            val_acc, val_rae, val_corr, test_acc, test_rae, test_corr = main(user)
+            vacc.append(val_acc)
+            vrae.append(val_rae)
+            vcorr.append(val_corr)
+            acc.append(test_acc)
+            rae.append(test_rae)
+            corr.append(test_corr)
+        print('\n\n')
+        print(f'{num_runs} runs average')
+        print('\n\n')
+        print("valid\trse\trae\tcorr")
+        print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(vacc), np.mean(vrae), np.mean(vcorr)))
+        print("std\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.std(vacc), np.std(vrae), np.std(vcorr)))
+    #     except:
+    #         not_available.append(user)
+    # print("not available", not_available)
     # print('\n\n')
     # print("test\trse\trae\tcorr")
     # print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(acc), np.mean(rae), np.mean(corr)))

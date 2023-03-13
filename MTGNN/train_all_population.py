@@ -52,14 +52,24 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
 
     predict = predict.data.cpu().numpy()
     Ytest = test.data.cpu().numpy()
-    sigma_p = (predict).std(axis=0)
-    sigma_g = (Ytest).std(axis=0)
-    mean_p = predict.mean(axis=0)
-    mean_g = Ytest.mean(axis=0)
-    index = (sigma_g != 0)
-    correlation = ((predict - mean_p) * (Ytest - mean_g)).mean(axis=0) / (sigma_p * sigma_g)
-    correlation = (correlation[index]).mean()
-    return rse, rae, correlation
+    def get_correlation(predict, Ytest):
+        sigma_p = (predict).std(axis=0)
+        sigma_g = (Ytest).std(axis=0)
+        mean_p = predict.mean(axis=0)
+        mean_g = Ytest.mean(axis=0)
+        index = (sigma_g != 0)
+        correlation = ((predict - mean_p) * (Ytest - mean_g)).mean(axis=0) / (sigma_p * sigma_g)
+        correlation = (correlation[index]).mean()
+        return correlation
+    correlation = get_correlation(predict, Ytest)
+
+    edema_correlation = get_correlation(predict[:, -1], Ytest[:, -1])
+    corr_lst = []
+
+    for feat_idx in range(predict.shape[1]):
+        corr_lst.append(get_correlation(predict[:, feat_idx], Ytest[:, feat_idx]))
+    
+    return rse, rae, correlation, corr_lst
 
 
 def train(dataloader, model, criterion, optim, device, model_type):
@@ -136,9 +146,9 @@ parser.add_argument('--residual_channels',type=int,default=16,help='residual cha
 parser.add_argument('--skip_channels',type=int,default=32,help='skip channels')
 parser.add_argument('--end_channels',type=int,default=64,help='end channels')
 parser.add_argument('--in_dim',type=int,default=1,help='inputs dimension')
-parser.add_argument('--seq_in_len',type=int,default=14,help='input sequence length') # used to be 24*7 for solar
+parser.add_argument('--seq_in_len',type=int,default=7,help='input sequence length') # used to be 24*7 for solar
 parser.add_argument('--seq_out_len',type=int,default=1,help='output sequence length')
-parser.add_argument('--horizon', type=int, default=7)
+parser.add_argument('--horizon', type=int, default=1)
 parser.add_argument('--layers',type=int,default=5,help='number of layers')
 
 parser.add_argument('--batch_size',type=int,default=32,help='batch size')
@@ -159,20 +169,37 @@ args = parser.parse_args()
 device = torch.device(args.device)
 torch.set_num_threads(3)
 
-def main(list_users, name, model_type="GNN"):
-    torch.manual_seed(42)
+def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred'):
+    
+    train_df_lst = []
+    val_df_lst = []
+
     train_dataset_lst = []
     val_dataset_lst = []
+
     for u in list_users:
-        file_name = f'/mnt/results/user_{u}_activity_bodyport_hyperimpute_normalized.csv'
+        file_name = f'/mnt/results/{task_name}/user_{u}_{task_name}_hyperimpute.csv'
         curr_all_data = np.loadtxt(file_name, delimiter=',')
+        print(u)
         num_all_data, _ = curr_all_data.shape
         curr_train_data = curr_all_data[:int(round(num_all_data * 0.8)), :]
         curr_val_data = curr_all_data[int(round(num_all_data * 0.8)):, :]
+        train_df_lst.append(curr_train_data)
+        val_df_lst.append(curr_val_data)
+
+    # normalization
+    normalized_train_df_lst, min_value_lst, max_value_lst = min_max_normalization(train_df_lst)
+    normalized_val_df_lst, _, _ = min_max_normalization(val_df_lst, min_value_lst=min_value_lst, max_value_lst=max_value_lst)
+
+    # create sequential datasets
+    for curr_train_data in normalized_train_df_lst:
         curr_train_dataset = SequenceDataset(curr_train_data, args.horizon, args.seq_in_len, device)
-        curr_val_dataset = SequenceDataset(curr_val_data, args.horizon, args.seq_in_len, device)
         train_dataset_lst.append(curr_train_dataset)
+    for curr_val_data in normalized_val_df_lst:
+        curr_val_dataset = SequenceDataset(curr_val_data, args.horizon, args.seq_in_len, device)
         val_dataset_lst.append(curr_val_dataset)
+    
+    # aggregate them
     aggregated_train_dataset = ConcatDataset(train_dataset_lst)
     aggregated_val_dataset = ConcatDataset(val_dataset_lst)
 
@@ -208,7 +235,7 @@ def main(list_users, name, model_type="GNN"):
     evaluateL1 = nn.L1Loss(size_average=False).to(device)
 
 
-    best_val = 10000000
+    best_val = 0
     optim = Optim(
         model.parameters(), args.optim, args.lr, args.clip, lr_decay=args.weight_decay
     )
@@ -219,16 +246,23 @@ def main(list_users, name, model_type="GNN"):
         for epoch in range(1, args.epochs + 1):
             epoch_start_time = time.time()
             train_loss = train(train_dataloader, model, criterion, optim, device, model_type)
-            val_loss, val_rae, val_corr = evaluate(val_dataloader, model, evaluateL2, evaluateL1, device, model_type)
+            val_loss, val_rae, val_corr, feat_corr_lst = evaluate(val_dataloader, model, evaluateL2, evaluateL1, device, model_type)
+            # print('edema_corr', edema_corr)
+            edema_corr = feat_corr_lst[-1]
             print(
                 '| end of epoch {:3d} | time: {:5.2f}s | train_loss {:5.4f} | valid rse {:5.4f} | valid rae {:5.4f} | valid corr  {:5.4f}'.format(
-                    epoch, (time.time() - epoch_start_time), train_loss, val_loss, val_rae, val_corr), flush=True)
+                    epoch, (time.time() - epoch_start_time), train_loss, val_loss, val_rae, val_corr, edema_corr), flush=True)
             # Save the model if the validation loss is the best we've seen so far.
 
-            if val_loss < best_val:
+            feature_corr_output_str = ''
+            for idx, feat in enumerate(feature_lst):
+                feature_corr_output_str += f'{feat}_corr {feat_corr_lst[idx]} |'
+            print(feature_corr_output_str)
+
+            if best_val < edema_corr:
                 with open(args.save, 'wb') as f:
                     torch.save(model, f)
-                best_val = val_loss
+                best_val = edema_corr
             # if epoch % 5 == 0:
             #     test_acc, test_rae, test_corr = evaluate(Data, Data.test[0], Data.test[1], model, evaluateL2, evaluateL1,
             #                                          args.batch_size)
@@ -242,75 +276,95 @@ def main(list_users, name, model_type="GNN"):
     with open(args.save, 'rb') as f:
         model = torch.load(f)
 
-    vtest_acc, vtest_rae, vtest_corr = evaluate(val_dataloader, model, evaluateL2, evaluateL1, device, model_type)
+    vtest_acc, vtest_rae, vtest_corr, vfeat_corr_lst = evaluate(val_dataloader, model, evaluateL2, evaluateL1, device, model_type)
     # test_acc, test_rae, test_corr = evaluate(Data, Data.test[0], Data.test[1], model, evaluateL2, evaluateL1,
     #                                      args.batch_size)
     # print("final test rse {:5.4f} | test rae {:5.4f} | test corr {:5.4f}".format(test_acc, test_rae, test_corr))
     test_acc, test_rae, test_corr = None, None, None
-    return vtest_acc, vtest_rae, vtest_corr, test_acc, test_rae, test_corr
+    return vtest_acc, vtest_rae, vtest_corr, vfeat_corr_lst, test_acc, test_rae, test_corr
 
 if __name__ == "__main__":
-    list_users_above_criteria = [
-        1032,
-        581,
-        407,
-        290,
-        1436,
-        1000,
-        95,
-        1386,
-        1431,
-        992,
-        1717,
-        1441,
-        122,
-        977,
-        293,
-        1700,
-        1744,
-        622,
+    ## for emesis
+    # list_users_above_criteria = [
+    #     1032,
+    #     581,
+    #     407,
+    #     290,
+    #     1436,
+    #     1000,
+    #     95,
+    #     1386,
+    #     1431,
+    #     992,
+    #     1717,
+    #     1441,
+    #     122,
+    #     977,
+    #     293,
+    #     1700,
+    #     1744,
+    #     622,
 
-        192,
-        1373,
-        84,
-        1393,
-        1432,
-        1378,
-        225,
-        1753,
-        2084,
-        969,
-        280,
-        99,
-        53,
-        983,
-        2068,
-        193,
-        2056,
-        2016,
-        2109, 
-        1995,
-        1706,
-        2015,
-        186,
-        137,
-        1658,
-        2083,
-        1383,
-        429,
-        279]
+    #     192,
+    #     1373,
+    #     84,
+    #     1393,
+    #     1432,
+    #     1378,
+    #     225,
+    #     1753,
+    #     2084,
+    #     969,
+    #     280,
+    #     99,
+    #     53,
+    #     983,
+    #     2068,
+    #     193,
+    #     2056,
+    #     2016,
+    #     2109, 
+    #     1995,
+    #     1706,
+    #     2015,
+    #     186,
+    #     137,
+    #     1658,
+    #     2083,
+    #     1383,
+    #     429,
+    #     279]
+    # for edema
+    list_users_above_criteria = [581, 407, 290, 1436, 1000, 95, 992, 1717, 293, 622, 291, 192, 1373, 225, 969, 280, 53, 983, 193, 186, 137, 
+    #1383, 
+    429]
+    list_users_above_criteria = [28, 30, 38, 40, 42, 53, 54, 55, 64, 66, 67, 68, 74, 94, 95, 118, 135, 137, 159, 1373, 1000, 174, 186, 190, 192, 193, 
+    # 1021, 
+    # 976, 
+    972, 225, 1004, 1429, 234, 280, 290, 291, 293, 404, 407, 408, 410, 1047, 428, 429, 980, 581, 603, 604, 622, 734, 983, 966, 969, 985, 987, 989, 991, 992, 997, 1024, 1041, 1403, 1038, 1367, 
+    # 1383, 
+    1389, 1422, 1426, 1427, 1436, 1440, 1444, 1453, 1717]
+
+    list_users_above_criteria = [53, 55, 137, 159, 410, 581, 622, 987, 1426]
+    feature_name_lst = ['Active calories','Calories','Daily movement','Minutes of high-intensity activity','Minutes of inactive',
+    'Minutes of low-intensity activity','Minutes of medium-intensity activity','High-intensity MET','Inactive MET','Low-intensity MET',
+    'Medium-intensity MET','Minutes of non-wear','Minutes of rest','Total daily steps','Impedance magnitude','Impedance phase',
+    'Weight','Respiratory rate','Edema']
     vacc = []
     vrae = []
     vcorr = []
     acc = []
     rae = []
     corr = []
-    num_runs = 1
+    feat_corr_lst = []
+    num_runs = 3
+    torch.manual_seed(42)
     for i in range(num_runs):
-        val_acc, val_rae, val_corr, test_acc, test_rae, test_corr = main(list_users_above_criteria, 'all_pop', model_type='LSTM')
+        val_acc, val_rae, val_corr, vfeat_corr_lst, test_acc, test_rae, test_corr = main(list_users_above_criteria, f'all_pop_edema_{i}', feature_lst=feature_name_lst, model_type='GNN')
         vacc.append(val_acc)
         vrae.append(val_rae)
         vcorr.append(val_corr)
+        feat_corr_lst.append(vfeat_corr_lst)
         acc.append(test_acc)
         rae.append(test_rae)
         corr.append(test_corr)
@@ -320,5 +374,29 @@ if __name__ == "__main__":
     print("valid\trse\trae\tcorr")
     print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(vacc), np.mean(vrae), np.mean(vcorr)))
     print("std\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.std(vacc), np.std(vrae), np.std(vcorr)))
+    feat_corr_lst = np.vstack(feat_corr_lst)
+    mean_feat_corr_lst = np.mean(feat_corr_lst, axis=0)
+    std_feat_corr_lst = np.std(feat_corr_lst, axis=0)
+
+    # feat_str = 'valid\t'
+    # mean_str = 'mean\t'
+    # std_str = 'std\t'
+    # for feat in feature_name_lst:
+    #     feat_str += feat + '\t'
+    # for i in range(mean_feat_corr_lst.shape[0]):
+    #     mean_str += ("{:5.4f}\t".format(mean_feat_corr_lst[i]))
+    #     std_str += ("{:5.4f}\t".format(std_feat_corr_lst[i]))
 
 
+    feat_str = 'valid&'
+    mean_str = 'mean&'
+    std_str = 'std&'
+    for feat in feature_name_lst:
+        feat_str += feat + '&'
+    for i in range(mean_feat_corr_lst.shape[0]):
+        mean_str += ("${:5.4f}\pm{:5.4f}$&".format(mean_feat_corr_lst[i], std_feat_corr_lst[i]))
+        # std_str += ("{:5.4f}&".format(std_feat_corr_lst[i]))
+    print('\n\n')
+    print(feat_str)
+    print(mean_str)
+    # print(std_str)
