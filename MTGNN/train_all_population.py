@@ -13,7 +13,56 @@ from trainer import Optim
 from sequence_dataset import SequenceDataset
 from torch.utils.data import ConcatDataset
 from torch.utils.data import DataLoader 
-from lstm import LSTMClassifier
+from model import LSTMClassifier, AdversarialDiscriminator
+
+
+parser = argparse.ArgumentParser(description='PyTorch Time series forecasting')
+
+parser.add_argument('--log_interval', type=int, default=2000, metavar='N',
+                    help='report interval')
+
+parser.add_argument('--optim', type=str, default='adam')
+parser.add_argument('--L1Loss', type=bool, default=True)
+parser.add_argument('--normalize', type=int, default=0) # already normalized
+parser.add_argument('--device',type=str,default='cuda:0',help='')
+parser.add_argument('--gcn_true', type=bool, default=True, help='whether to add graph convolution layer')
+parser.add_argument('--buildA_true', type=bool, default=True, help='whether to construct adaptive adjacency matrix')
+parser.add_argument('--gcn_depth',type=int,default=2,help='graph convolution depth')
+parser.add_argument('--num_nodes',type=int,default=19,help='number of nodes/variables') # used to be 137 for solar
+parser.add_argument('--dropout',type=float,default=0.3,help='dropout rate')
+parser.add_argument('--subgraph_size',type=int,default=19,help='k') # used to be 20 by default
+parser.add_argument('--node_dim',type=int,default=40,help='dim of nodes')
+parser.add_argument('--dilation_exponential',type=int,default=2,help='dilation exponential')
+parser.add_argument('--conv_channels',type=int,default=16,help='convolution channels')
+parser.add_argument('--residual_channels',type=int,default=16,help='residual channels')
+parser.add_argument('--skip_channels',type=int,default=32,help='skip channels')
+parser.add_argument('--end_channels',type=int,default=7,help='end channels')
+parser.add_argument('--in_dim',type=int,default=1,help='inputs dimension')
+parser.add_argument('--seq_in_len',type=int,default=7,help='input sequence length') # used to be 24*7 for solar
+parser.add_argument('--seq_out_len',type=int,default=1,help='output sequence length')
+parser.add_argument('--horizon', type=int, default=1)
+parser.add_argument('--layers',type=int,default=5,help='number of layers')
+
+parser.add_argument('--batch_size',type=int,default=32,help='batch size')
+parser.add_argument('--lr',type=float,default=0.0001,help='learning rate')
+parser.add_argument('--weight_decay',type=float,default=0.00001,help='weight decay rate')
+
+parser.add_argument('--clip',type=int,default=5,help='clip')
+
+parser.add_argument('--propalpha',type=float,default=0.05,help='prop alpha')
+parser.add_argument('--tanhalpha',type=float,default=3,help='tanh alpha')
+
+parser.add_argument('--epochs',type=int,default=200,help='')
+parser.add_argument('--num_split',type=int,default=1,help='number of splits for graphs')
+parser.add_argument('--step_size',type=int,default=30,help='step_size')
+parser.add_argument('--adv', type=bool, default=True, help='whether to add adverserial loss')
+parser.add_argument('--schedule_interval',type=int,default=1,help='scheduler interval')
+parser.add_argument('--schedule_ratio',type=float,default=0.001,help='multiplicative factor of learning rate decay')
+args = parser.parse_args()
+device = torch.device(args.device)
+torch.set_num_threads(3)
+adv_E_delay_epochs = 7
+adv_D_delay_epochs = 7
 def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
     model.eval()
     total_loss = 0
@@ -22,15 +71,16 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
     predict = None
     test = None
 
-    for X, Y in dataloader:
-        X = X.to(device)
-        Y = Y.to(device)
+    for batch_data in dataloader:
+        X = batch_data['X'].to(device)
+        Y = batch_data['Y'].to(device)
+        user_label = batch_data['user_label'].to(device)
         feature_size = X.shape[-1]
         if model_type == 'GNN':
             X = torch.unsqueeze(X,dim=1)
             X = X.transpose(2,3)
         with torch.no_grad():
-            output = model(X)
+            output = model(X)['output']
         output = torch.squeeze(output)
         if len(output.shape)==1:
             output = output.unsqueeze(dim=0)
@@ -47,8 +97,8 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
         total_loss_l1 += evaluateL1(output * scale, Y * scale).item()
         n_samples += (output.size(0) * feature_size)
 
-    rse = math.sqrt(total_loss / n_samples) # / data.rse
-    rae = (total_loss_l1 / n_samples) # / data.rae
+    rse = math.sqrt(total_loss) # / data.rse
+    rae = (total_loss_l1) # / data.rae
 
     predict = predict.data.cpu().numpy()
     Ytest = test.data.cpu().numpy()
@@ -72,14 +122,18 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
     return rse, rae, correlation, corr_lst
 
 
-def train(dataloader, model, criterion, optim, device, model_type):
+def train(dataloader, model, criterion, optim, device, model_type, epoch, optim_D=None, optim_E=None, discriminator=None, criterion_adv=None):
     model.train()
+    discriminator.train()
     total_loss = 0
+    adv_loss_E = 0
+    adv_loss_D = 0
     n_samples = 0
     iter = 0
-    for X, Y in dataloader:
-        X = X.to(device)
-        Y = Y.to(device)
+    for batch_data in dataloader:
+        X = batch_data['X'].to(device)
+        Y = batch_data['Y'].to(device)
+        user_label = batch_data['user_label'].to(device)
         feature_size = X.shape[-1]
         model.zero_grad()
         if model_type == 'GNN':
@@ -96,7 +150,12 @@ def train(dataloader, model, criterion, optim, device, model_type):
                 id = torch.tensor(id).to(device)
                 tx = X[:, :, id, :]
                 ty = Y[:, id]
-                output = model(tx,id)
+                
+                output_dict = model(tx, id, CLS=args.adv)
+                output = output_dict['output']
+                if args.adv:
+                    cls_emb = output_dict['cls_emb']
+
                 output = torch.squeeze(output)
                 scale = np.ones(feature_size)
                 scale = torch.from_numpy(scale).float().to(device)
@@ -107,6 +166,32 @@ def train(dataloader, model, criterion, optim, device, model_type):
                 total_loss += loss.item()
                 n_samples += (output.size(0) * feature_size)
                 grad_norm = optim.step()
+                if args.adv:
+                    model.zero_grad()
+                    discriminator.zero_grad()
+                    output_dict = model(tx, id, CLS=args.adv)
+                    # print(output_dict["cls_emb"].shape)
+                    # print(user_label)
+                    loss_adv_D = criterion_adv(
+                    discriminator(output_dict["cls_emb"].detach()), user_label)
+                    
+                    if epoch > adv_D_delay_epochs:
+                        model.zero_grad()
+                        adv_loss_D += loss_adv_D.item()
+                        # discriminator.zero_grad()       
+                        loss_adv_D.backward()
+                        optim_D.step()
+
+                    # TRAINING ENCODER
+                    model.zero_grad()
+                    discriminator.zero_grad()
+                    loss_adv_E = -criterion_adv(
+                        discriminator(output_dict["cls_emb"]), user_label)
+                    if epoch > adv_E_delay_epochs:
+                        # model.zero_grad()
+                        discriminator.zero_grad()
+                        loss_adv_E.backward()
+                        optim_E.step()
         elif model_type == "LSTM":
             output = model(X)
             output = torch.squeeze(output)
@@ -116,60 +201,13 @@ def train(dataloader, model, criterion, optim, device, model_type):
             n_samples += (output.size(0) * feature_size)
             grad_norm = optim.step()
 
-        if iter%100==0:
-            print('iter:{:3d} | loss: {:.3f}'.format(iter,loss.item()/(output.size(0) * feature_size)))
-        iter += 1
-    return total_loss / n_samples
+        # if iter%100==0:
+        #     print('iter:{:3d} | loss: {:.3f}'.format(iter,loss.item()/(output.size(0) * feature_size)))
+        # iter += 1
+    loss_dict = {'training_loss': total_loss, 'adv_loss_D': adv_loss_D}
+    return loss_dict
 
-selected_user = 1431
-parser = argparse.ArgumentParser(description='PyTorch Time series forecasting')
-parser.add_argument('--data', type=str, default=f'/mnt/results/user_{selected_user}_activity_bodyport_hyperimpute.csv',
-                    help='location of the data file')
-parser.add_argument('--log_interval', type=int, default=2000, metavar='N',
-                    help='report interval')
-parser.add_argument('--save', type=str, default=f'/mnt/results/model/model_{selected_user}.pt',
-                    help='path to save the final model')
-parser.add_argument('--optim', type=str, default='adam')
-parser.add_argument('--L1Loss', type=bool, default=True)
-parser.add_argument('--normalize', type=int, default=0) # already normalized
-parser.add_argument('--device',type=str,default='cuda:0',help='')
-parser.add_argument('--gcn_true', type=bool, default=True, help='whether to add graph convolution layer')
-parser.add_argument('--buildA_true', type=bool, default=True, help='whether to construct adaptive adjacency matrix')
-parser.add_argument('--gcn_depth',type=int,default=2,help='graph convolution depth')
-parser.add_argument('--num_nodes',type=int,default=19,help='number of nodes/variables') # used to be 137 for solar
-parser.add_argument('--dropout',type=float,default=0.3,help='dropout rate')
-parser.add_argument('--subgraph_size',type=int,default=19,help='k') # used to be 20 by default
-parser.add_argument('--node_dim',type=int,default=40,help='dim of nodes')
-parser.add_argument('--dilation_exponential',type=int,default=2,help='dilation exponential')
-parser.add_argument('--conv_channels',type=int,default=16,help='convolution channels')
-parser.add_argument('--residual_channels',type=int,default=16,help='residual channels')
-parser.add_argument('--skip_channels',type=int,default=32,help='skip channels')
-parser.add_argument('--end_channels',type=int,default=64,help='end channels')
-parser.add_argument('--in_dim',type=int,default=1,help='inputs dimension')
-parser.add_argument('--seq_in_len',type=int,default=7,help='input sequence length') # used to be 24*7 for solar
-parser.add_argument('--seq_out_len',type=int,default=1,help='output sequence length')
-parser.add_argument('--horizon', type=int, default=1)
-parser.add_argument('--layers',type=int,default=5,help='number of layers')
-
-parser.add_argument('--batch_size',type=int,default=32,help='batch size')
-parser.add_argument('--lr',type=float,default=0.0001,help='learning rate')
-parser.add_argument('--weight_decay',type=float,default=0.00001,help='weight decay rate')
-
-parser.add_argument('--clip',type=int,default=5,help='clip')
-
-parser.add_argument('--propalpha',type=float,default=0.05,help='prop alpha')
-parser.add_argument('--tanhalpha',type=float,default=3,help='tanh alpha')
-
-parser.add_argument('--epochs',type=int,default=50,help='')
-parser.add_argument('--num_split',type=int,default=1,help='number of splits for graphs')
-parser.add_argument('--step_size',type=int,default=100,help='step_size')
-
-
-args = parser.parse_args()
-device = torch.device(args.device)
-torch.set_num_threads(3)
-
-def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred'):
+def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred', print_feature_corr=True):
     
     train_df_lst = []
     val_df_lst = []
@@ -192,11 +230,11 @@ def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred'
     normalized_val_df_lst, _, _ = min_max_normalization(val_df_lst, min_value_lst=min_value_lst, max_value_lst=max_value_lst)
 
     # create sequential datasets
-    for curr_train_data in normalized_train_df_lst:
-        curr_train_dataset = SequenceDataset(curr_train_data, args.horizon, args.seq_in_len, device)
+    for count, curr_train_data in enumerate(normalized_train_df_lst):
+        curr_train_dataset = SequenceDataset(curr_train_data, args.horizon, args.seq_in_len, device, user_id=count)
         train_dataset_lst.append(curr_train_dataset)
-    for curr_val_data in normalized_val_df_lst:
-        curr_val_dataset = SequenceDataset(curr_val_data, args.horizon, args.seq_in_len, device)
+    for count, curr_val_data in enumerate(normalized_val_df_lst):
+        curr_val_dataset = SequenceDataset(curr_val_data, args.horizon, args.seq_in_len, device, user_id=count)
         val_dataset_lst.append(curr_val_dataset)
     
     # aggregate them
@@ -206,9 +244,9 @@ def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred'
     train_dataloader = DataLoader(aggregated_train_dataset, batch_size=args.batch_size, shuffle=True)
     val_dataloader = DataLoader(aggregated_val_dataset, batch_size=args.batch_size, shuffle=False)
     # args.data = f'/mnt/results/user_{selected_user}_activity_bodyport_hyperimpute.csv'
-    args.save = f'/mnt/results/model/model_{name}_{model_type}.pt'
+    args.save = f'/mnt/results/model/model_{name}_{model_type}_adv{args.adv}.pt'
     print(vars(args))
-    # Data = DataLoaderS(args.data, 0.8, 0.2, device, args.horizon, args.seq_in_len, args.normalize)
+
     if model_type == "GNN":
         model = gtnet(args.gcn_true, args.buildA_true, args.gcn_depth, args.num_nodes,
                     device, dropout=args.dropout, subgraph_size=args.subgraph_size,
@@ -226,13 +264,30 @@ def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred'
         print('The recpetive field size is', model.receptive_field)
     nParams = sum([p.nelement() for p in model.parameters()])
     print('Number of model parameters is', nParams, flush=True)
+    optimizer_D = None
+    optimizer_E = None
+    discriminator = None
+    criterion_adv = None
+    if args.adv:
+        lr_ADV = 0.005  # learning rate for discriminator, used when ADV is True
+        discriminator = AdversarialDiscriminator(
+            d_model=args.end_channels * args.num_nodes,
+            n_cls=len(list_users)).to(device)
+
+        criterion_adv = nn.CrossEntropyLoss().to(device)  # consider using label smoothing
+        optimizer_E = torch.optim.Adam(model.parameters(), lr=lr_ADV)
+        scheduler_E = torch.optim.lr_scheduler.StepLR(
+            optimizer_E, args.schedule_interval, gamma=args.schedule_ratio)
+        optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr_ADV)
+        scheduler_D = torch.optim.lr_scheduler.StepLR(
+            optimizer_D, args.schedule_interval, gamma=args.schedule_ratio)
 
     if args.L1Loss:
-        criterion = nn.L1Loss(size_average=False).to(device)
+        criterion = nn.L1Loss().to(device)
     else:
-        criterion = nn.MSELoss(size_average=False).to(device)
-    evaluateL2 = nn.MSELoss(size_average=False).to(device)
-    evaluateL1 = nn.L1Loss(size_average=False).to(device)
+        criterion = nn.MSELoss().to(device)
+    evaluateL2 = nn.MSELoss().to(device)
+    evaluateL1 = nn.L1Loss().to(device)
 
 
     best_val = 0
@@ -245,28 +300,42 @@ def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred'
         print('begin training')
         for epoch in range(1, args.epochs + 1):
             epoch_start_time = time.time()
-            train_loss = train(train_dataloader, model, criterion, optim, device, model_type)
+
+            loss_dict = train(train_dataloader, model, criterion, optim, device, model_type, epoch=epoch, optim_D=optimizer_D, optim_E=optimizer_E, 
+                discriminator=discriminator, criterion_adv=criterion_adv)
+            train_loss = loss_dict['training_loss']
+            adv_loss = loss_dict['adv_loss_D']
+            # train_loss = train(train_dataloader, model, criterion, optim, device, model_type, epoch=epoch)
             val_loss, val_rae, val_corr, feat_corr_lst = evaluate(val_dataloader, model, evaluateL2, evaluateL1, device, model_type)
             # print('edema_corr', edema_corr)
             edema_corr = feat_corr_lst[-1]
             print(
-                '| end of epoch {:3d} | time: {:5.2f}s | train_loss {:5.4f} | valid rse {:5.4f} | valid rae {:5.4f} | valid corr  {:5.4f}'.format(
-                    epoch, (time.time() - epoch_start_time), train_loss, val_loss, val_rae, val_corr, edema_corr), flush=True)
+                '| end of epoch {:3d} | time: {:5.2f}s | train_loss {:5.4f} | adv loss {:5.4f} | valid rse {:5.4f} | valid rae {:5.4f} | valid corr  {:5.4f}'.format(
+                    epoch, (time.time() - epoch_start_time), train_loss, adv_loss, val_loss, val_rae, val_corr, edema_corr), flush=True)
             # Save the model if the validation loss is the best we've seen so far.
 
             feature_corr_output_str = ''
-            for idx, feat in enumerate(feature_lst):
-                feature_corr_output_str += f'{feat}_corr {feat_corr_lst[idx]} |'
-            print(feature_corr_output_str)
+            if print_feature_corr:
+                for idx, feat in enumerate(feature_lst):
+                    feature_corr_output_str += f'{feat}_corr {feat_corr_lst[idx]} | '
+                print(feature_corr_output_str)
 
             if best_val < edema_corr:
                 with open(args.save, 'wb') as f:
                     torch.save(model, f)
                 best_val = edema_corr
+
             # if epoch % 5 == 0:
             #     test_acc, test_rae, test_corr = evaluate(Data, Data.test[0], Data.test[1], model, evaluateL2, evaluateL1,
             #                                          args.batch_size)
             #     print("test rse {:5.4f} | test rae {:5.4f} | test corr {:5.4f}".format(test_acc, test_rae, test_corr), flush=True)
+            # if args.adv:
+            #     scheduler_D.step()
+            #     scheduler_E.step()
+        with open(args.save, 'wb') as f:
+            torch.save(model, f)
+
+
 
     except KeyboardInterrupt:
         print('-' * 89)
@@ -360,7 +429,7 @@ if __name__ == "__main__":
     num_runs = 3
     torch.manual_seed(42)
     for i in range(num_runs):
-        val_acc, val_rae, val_corr, vfeat_corr_lst, test_acc, test_rae, test_corr = main(list_users_above_criteria, f'all_pop_edema_{i}', feature_lst=feature_name_lst, model_type='GNN')
+        val_acc, val_rae, val_corr, vfeat_corr_lst, test_acc, test_rae, test_corr = main(list_users_above_criteria, f'all_pop_edema_{i}_adv', feature_lst=feature_name_lst, model_type='GNN')
         vacc.append(val_acc)
         vrae.append(val_rae)
         vcorr.append(val_corr)

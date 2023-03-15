@@ -20,6 +20,7 @@ class gtnet(nn.Module):
                                     out_channels=residual_channels,
                                     kernel_size=(1, 1))
         self.gc = graph_constructor(num_nodes, subgraph_size, node_dim, device, alpha=tanhalpha, static_feat=static_feat)
+        self.cls_emb = None
 
         self.seq_length = seq_length
         kernel_size = 7
@@ -85,8 +86,19 @@ class gtnet(nn.Module):
 
         self.idx = torch.arange(self.num_nodes).to(device)
 
+    def _get_cell_emb(self, layer_output):
+            """
+            Args:
+                layer_output(:obj:`Tensor`): shape (batch, end_channels, feature_size, 1)
 
-    def forward(self, input, idx=None, intermediate_output=False):
+            Returns:
+                :obj:`Tensor`: shape (batch, end_channels*feature_size)
+            """
+
+            cell_emb = layer_output.squeeze(-1).reshape(layer_output.shape[0], -1)
+            return cell_emb
+
+    def forward(self, input, idx=None, CLS=False):
         # print(input.shape)
         seq_len = input.size(3)
         assert seq_len==self.seq_length, 'input sequence length not equal to preset sequence length'
@@ -131,8 +143,14 @@ class gtnet(nn.Module):
 
         skip = self.skipE(x) + skip
         x = F.relu(skip)
-        temp = F.relu(self.end_conv_1(x))
+        temp = self.end_conv_1(x)
+        self.cls_emb = self._get_cell_emb(temp)
+        temp = F.relu(temp)
         x = self.end_conv_2(temp)
-        if intermediate_output:
-            return temp
-        return x
+
+        output_dict = {}
+        output_dict['output'] = x
+        if CLS:
+            output_dict['cls_emb'] = self.cls_emb
+
+        return output_dict

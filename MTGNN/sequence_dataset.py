@@ -11,7 +11,8 @@ def normal_std(x):
     return x.std() * np.sqrt((len(x) - 1.)/(len(x)))
 
 class SequenceDataset(Dataset):
-    def __init__(self, data, horizon, window, device, normalize=0):
+    def __init__(self, data, horizon, window, device, user_id, normalize=0):
+        self.user_label = user_id
         self.horizon = horizon
         self.window = window
         self.raw_data = data
@@ -31,7 +32,8 @@ class SequenceDataset(Dataset):
         return(len(self.data_X))
 
     def __getitem__(self, idx):
-        return self.data_X[idx, :, :], self.data_Y[idx, :]
+        output_dict = {"X": self.data_X[idx, :, :], "Y": self.data_Y[idx, :], "user_label": self.user_label}
+        return output_dict
 
     def _normalized(self, normalize):
 

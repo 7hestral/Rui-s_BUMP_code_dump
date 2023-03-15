@@ -12,7 +12,9 @@ survey_question_to_question_id = {
     'walk': 208,
     'remember': 209
 }
-
+def na_rate(df):
+    if not len(df): return 1
+    return np.max(np.sum(df.isna()))/len(df)
 def merge_two_df_by_userid(user_id, df1, df2, start=None, end=None, how='inner'):
     df1 = df1[df1.user_id == user_id]#.dropna()
     df2 = df2[df2.user_id == user_id]#.dropna()
