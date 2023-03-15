@@ -43,8 +43,8 @@ parser.add_argument('--seq_out_len',type=int,default=1,help='output sequence len
 parser.add_argument('--horizon', type=int, default=1)
 parser.add_argument('--layers',type=int,default=5,help='number of layers')
 
-parser.add_argument('--batch_size',type=int,default=32,help='batch size')
-parser.add_argument('--lr',type=float,default=0.0001,help='learning rate')
+parser.add_argument('--batch_size',type=int,default=128,help='batch size')
+parser.add_argument('--lr',type=float,default=0.001,help='learning rate')
 parser.add_argument('--weight_decay',type=float,default=0.00001,help='weight decay rate')
 
 parser.add_argument('--clip',type=int,default=5,help='clip')
@@ -52,7 +52,7 @@ parser.add_argument('--clip',type=int,default=5,help='clip')
 parser.add_argument('--propalpha',type=float,default=0.05,help='prop alpha')
 parser.add_argument('--tanhalpha',type=float,default=3,help='tanh alpha')
 
-parser.add_argument('--epochs',type=int,default=200,help='')
+parser.add_argument('--epochs',type=int,default=70,help='')
 parser.add_argument('--num_split',type=int,default=1,help='number of splits for graphs')
 parser.add_argument('--step_size',type=int,default=30,help='step_size')
 parser.add_argument('--adv', type=bool, default=True, help='whether to add adverserial loss')
@@ -61,8 +61,10 @@ parser.add_argument('--schedule_ratio',type=float,default=0.001,help='multiplica
 args = parser.parse_args()
 device = torch.device(args.device)
 torch.set_num_threads(3)
-adv_E_delay_epochs = 7
-adv_D_delay_epochs = 7
+adv_E_delay_epochs = 4
+adv_D_delay_epochs = 3
+num_epoch_discriminator = 50
+adv_weight = 1.7
 def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
     model.eval()
     total_loss = 0
@@ -124,7 +126,8 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
 
 def train(dataloader, model, criterion, optim, device, model_type, epoch, optim_D=None, optim_E=None, discriminator=None, criterion_adv=None):
     model.train()
-    discriminator.train()
+    if args.adv:
+        discriminator.train()
     total_loss = 0
     adv_loss_E = 0
     adv_loss_D = 0
@@ -161,37 +164,16 @@ def train(dataloader, model, criterion, optim, device, model_type, epoch, optim_
                 scale = torch.from_numpy(scale).float().to(device)
                 scale = scale.expand(output.size(0), feature_size)
                 scale = scale[:,id]
-                loss = criterion(output * scale, ty * scale)
+                if args.adv and epoch > adv_E_delay_epochs:
+                    discriminator.zero_grad()
+                    loss_adv_E = -criterion_adv(discriminator(output_dict["cls_emb"]), user_label)
+                else:
+                    loss_adv_E = 0
+                loss = criterion(output * scale, ty * scale) + adv_weight * loss_adv_E
                 loss.backward()
                 total_loss += loss.item()
                 n_samples += (output.size(0) * feature_size)
                 grad_norm = optim.step()
-                if args.adv:
-                    model.zero_grad()
-                    discriminator.zero_grad()
-                    output_dict = model(tx, id, CLS=args.adv)
-                    # print(output_dict["cls_emb"].shape)
-                    # print(user_label)
-                    loss_adv_D = criterion_adv(
-                    discriminator(output_dict["cls_emb"].detach()), user_label)
-                    
-                    if epoch > adv_D_delay_epochs:
-                        model.zero_grad()
-                        adv_loss_D += loss_adv_D.item()
-                        # discriminator.zero_grad()       
-                        loss_adv_D.backward()
-                        optim_D.step()
-
-                    # TRAINING ENCODER
-                    model.zero_grad()
-                    discriminator.zero_grad()
-                    loss_adv_E = -criterion_adv(
-                        discriminator(output_dict["cls_emb"]), user_label)
-                    if epoch > adv_E_delay_epochs:
-                        # model.zero_grad()
-                        discriminator.zero_grad()
-                        loss_adv_E.backward()
-                        optim_E.step()
         elif model_type == "LSTM":
             output = model(X)
             output = torch.squeeze(output)
@@ -200,6 +182,49 @@ def train(dataloader, model, criterion, optim, device, model_type, epoch, optim_
             total_loss += loss.item()
             n_samples += (output.size(0) * feature_size)
             grad_norm = optim.step()
+    # TRAIN DISCRIMINATOR
+    if model_type == "GNN" and args.adv and epoch > adv_D_delay_epochs:
+        for i in range(num_epoch_discriminator):
+            for batch_data in dataloader:
+                X = batch_data['X'].to(device)
+                Y = batch_data['Y'].to(device)
+                user_label = batch_data['user_label'].to(device)
+                model.zero_grad()
+                discriminator.zero_grad()
+                feature_size = X.shape[-1]
+                X = torch.unsqueeze(X,dim=1)
+                X = X.transpose(2,3)
+                if iter % args.step_size == 0:
+                    perm = np.random.permutation(range(args.num_nodes))
+                num_sub = int(args.num_nodes / args.num_split)
+                for j in range(args.num_split):
+                    if j != args.num_split - 1:
+                        id = perm[j * num_sub:(j + 1) * num_sub]
+                    else:
+                        id = perm[j * num_sub:]
+                    id = torch.tensor(id).to(device)
+                    tx = X[:, :, id, :]
+                    ty = Y[:, id]
+                    output_dict = model(tx, id, CLS=args.adv)
+                    loss_adv_D = criterion_adv(
+                    discriminator(output_dict["cls_emb"].detach()), user_label)
+                    
+                    if i==num_epoch_discriminator-1:
+                        adv_loss_D += loss_adv_D.item()
+                    loss_adv_D.backward()
+                    optim_D.step()
+
+                    # # TRAINING ENCODER
+                    # model.zero_grad()
+                    # discriminator.zero_grad()
+                    # loss_adv_E = -criterion_adv(
+                    #     discriminator(output_dict["cls_emb"]), user_label)
+                    # if epoch > adv_E_delay_epochs:
+                    #     # model.zero_grad()
+                    #     discriminator.zero_grad()
+                    #     loss_adv_E.backward()
+                    #     optim_E.step()
+
 
         # if iter%100==0:
         #     print('iter:{:3d} | loss: {:.3f}'.format(iter,loss.item()/(output.size(0) * feature_size)))
@@ -426,10 +451,10 @@ if __name__ == "__main__":
     rae = []
     corr = []
     feat_corr_lst = []
-    num_runs = 3
+    num_runs = 1
     torch.manual_seed(42)
     for i in range(num_runs):
-        val_acc, val_rae, val_corr, vfeat_corr_lst, test_acc, test_rae, test_corr = main(list_users_above_criteria, f'all_pop_edema_{i}_adv', feature_lst=feature_name_lst, model_type='GNN')
+        val_acc, val_rae, val_corr, vfeat_corr_lst, test_acc, test_rae, test_corr = main(list_users_above_criteria, f'all_pop_edema_{i}_advweight_{adv_weight}', feature_lst=feature_name_lst, model_type='GNN')
         vacc.append(val_acc)
         vrae.append(val_rae)
         vcorr.append(val_corr)
