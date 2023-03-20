@@ -64,7 +64,7 @@ torch.set_num_threads(3)
 adv_E_delay_epochs = 4
 adv_D_delay_epochs = 3
 num_epoch_discriminator = 50
-adv_weight = 1.7
+adv_weight = 2
 def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
     model.eval()
     total_loss = 0
@@ -236,23 +236,36 @@ def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred'
     
     train_df_lst = []
     val_df_lst = []
+    test_df_lst = []
 
     train_dataset_lst = []
     val_dataset_lst = []
+    test_dataset_lst = []
 
     for u in list_users:
         file_name = f'/mnt/results/{task_name}/user_{u}_{task_name}_hyperimpute.csv'
         curr_all_data = np.loadtxt(file_name, delimiter=',')
         print(u)
         num_all_data, _ = curr_all_data.shape
-        curr_train_data = curr_all_data[:int(round(num_all_data * 0.8)), :]
-        curr_val_data = curr_all_data[int(round(num_all_data * 0.8)):, :]
+        val_split_idx = int(num_all_data * 0.6)
+        test_split_idx = int(num_all_data * 0.8)
+
+        curr_train_data = curr_all_data[:val_split_idx, :]
+        curr_val_data = curr_all_data[val_split_idx:test_split_idx, :]
+        curr_test_data = curr_all_data[test_split_idx:, :]
+
+        print(curr_train_data.shape)
+        print(curr_val_data.shape)
+        print(curr_test_data.shape)
+
         train_df_lst.append(curr_train_data)
         val_df_lst.append(curr_val_data)
+        test_df_lst.append(curr_test_data)
 
     # normalization
     normalized_train_df_lst, min_value_lst, max_value_lst = min_max_normalization(train_df_lst)
     normalized_val_df_lst, _, _ = min_max_normalization(val_df_lst, min_value_lst=min_value_lst, max_value_lst=max_value_lst)
+    normalized_test_df_lst, _, _ = min_max_normalization(test_df_lst, min_value_lst=min_value_lst, max_value_lst=max_value_lst)
 
     # create sequential datasets
     for count, curr_train_data in enumerate(normalized_train_df_lst):
@@ -261,13 +274,18 @@ def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred'
     for count, curr_val_data in enumerate(normalized_val_df_lst):
         curr_val_dataset = SequenceDataset(curr_val_data, args.horizon, args.seq_in_len, device, user_id=count)
         val_dataset_lst.append(curr_val_dataset)
+    for count, curr_test_data in enumerate(normalized_test_df_lst):
+        curr_test_dataset = SequenceDataset(curr_test_data, args.horizon, args.seq_in_len, device, user_id=count)
+        test_dataset_lst.append(curr_test_dataset)
     
     # aggregate them
     aggregated_train_dataset = ConcatDataset(train_dataset_lst)
     aggregated_val_dataset = ConcatDataset(val_dataset_lst)
+    aggregated_test_dataset = ConcatDataset(test_dataset_lst)
 
     train_dataloader = DataLoader(aggregated_train_dataset, batch_size=args.batch_size, shuffle=True)
     val_dataloader = DataLoader(aggregated_val_dataset, batch_size=args.batch_size, shuffle=False)
+    test_dataloader = DataLoader(aggregated_test_dataset, batch_size=args.batch_size, shuffle=False)
     # args.data = f'/mnt/results/user_{selected_user}_activity_bodyport_hyperimpute.csv'
     args.save = f'/mnt/results/model/model_{name}_{model_type}_adv{args.adv}.pt'
     print(vars(args))
@@ -374,8 +392,8 @@ def main(list_users, name, feature_lst, model_type="GNN", task_name='edema_pred'
     # test_acc, test_rae, test_corr = evaluate(Data, Data.test[0], Data.test[1], model, evaluateL2, evaluateL1,
     #                                      args.batch_size)
     # print("final test rse {:5.4f} | test rae {:5.4f} | test corr {:5.4f}".format(test_acc, test_rae, test_corr))
-    test_acc, test_rae, test_corr = None, None, None
-    return vtest_acc, vtest_rae, vtest_corr, vfeat_corr_lst, test_acc, test_rae, test_corr
+    test_acc, test_rae, test_corr, tfeat_corr_lst = evaluate(test_dataloader, model, evaluateL2, evaluateL1, device, model_type)
+    return vtest_acc, vtest_rae, vtest_corr, vfeat_corr_lst, test_acc, test_rae, test_corr, tfeat_corr_lst
 
 if __name__ == "__main__":
     ## for emesis
@@ -451,26 +469,27 @@ if __name__ == "__main__":
     rae = []
     corr = []
     feat_corr_lst = []
+    test_feat_corr_lst = []
     num_runs = 1
-    torch.manual_seed(42)
+    # 42
+    torch.manual_seed(2139)
     for i in range(num_runs):
-        val_acc, val_rae, val_corr, vfeat_corr_lst, test_acc, test_rae, test_corr = main(list_users_above_criteria, f'all_pop_edema_{i}_advweight_{adv_weight}', feature_lst=feature_name_lst, model_type='GNN')
+        val_acc, val_rae, val_corr, vfeat_corr, test_acc, test_rae, test_corr, test_feat_corr = main(list_users_above_criteria, f'all_pop_edema_{i}_advweight_{adv_weight}', feature_lst=feature_name_lst, model_type='GNN')
         vacc.append(val_acc)
         vrae.append(val_rae)
         vcorr.append(val_corr)
-        feat_corr_lst.append(vfeat_corr_lst)
+        feat_corr_lst.append(vfeat_corr)
         acc.append(test_acc)
         rae.append(test_rae)
         corr.append(test_corr)
+        test_feat_corr_lst.append(test_feat_corr)
     print('\n\n')
     print(f'{num_runs} runs average')
     print('\n\n')
     print("valid\trse\trae\tcorr")
     print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(vacc), np.mean(vrae), np.mean(vcorr)))
     print("std\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.std(vacc), np.std(vrae), np.std(vcorr)))
-    feat_corr_lst = np.vstack(feat_corr_lst)
-    mean_feat_corr_lst = np.mean(feat_corr_lst, axis=0)
-    std_feat_corr_lst = np.std(feat_corr_lst, axis=0)
+
 
     # feat_str = 'valid\t'
     # mean_str = 'mean\t'
@@ -481,7 +500,9 @@ if __name__ == "__main__":
     #     mean_str += ("{:5.4f}\t".format(mean_feat_corr_lst[i]))
     #     std_str += ("{:5.4f}\t".format(std_feat_corr_lst[i]))
 
-
+    feat_corr_lst = np.vstack(feat_corr_lst)
+    mean_feat_corr_lst = np.mean(feat_corr_lst, axis=0)
+    std_feat_corr_lst = np.std(feat_corr_lst, axis=0)
     feat_str = 'valid&'
     mean_str = 'mean&'
     std_str = 'std&'
@@ -494,3 +515,18 @@ if __name__ == "__main__":
     print(feat_str)
     print(mean_str)
     # print(std_str)
+    print('-'*10, 'test', '-' * 10)
+    feat_corr_lst = np.vstack(test_feat_corr_lst)
+    mean_feat_corr_lst = np.mean(test_feat_corr_lst, axis=0)
+    std_feat_corr_lst = np.std(test_feat_corr_lst, axis=0)
+    feat_str = 'test&'
+    mean_str = 'mean&'
+    std_str = 'std&'
+    for feat in feature_name_lst:
+        feat_str += feat + '&'
+    for i in range(mean_feat_corr_lst.shape[0]):
+        mean_str += ("${:5.4f}\pm{:5.4f}$&".format(mean_feat_corr_lst[i], std_feat_corr_lst[i]))
+        # std_str += ("{:5.4f}&".format(std_feat_corr_lst[i]))
+    print('\n\n')
+    print(feat_str)
+    print(mean_str)
