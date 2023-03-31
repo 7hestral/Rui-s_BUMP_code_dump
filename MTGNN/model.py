@@ -88,6 +88,14 @@ class AdversarialDiscriminator(nn.Module):
         super().__init__()
         # module list
         self._decoder = nn.ModuleList()
+        # self._decoder = nn.Sequential(
+        #     nn.Linear(d_model, 1024),
+        #     nn.ReLU(),
+        #     nn.Linear(1024, 2048),
+        #     nn.ReLU(),
+        #     nn.LayerNorm(2048),
+        #     nn.Linear(2048, n_cls)
+        # )
         for i in range(nlayers - 1):
             self._decoder.append(nn.Linear(d_model, d_model))
             self._decoder.append(activation())
@@ -105,3 +113,4 @@ class AdversarialDiscriminator(nn.Module):
         for layer in self._decoder:
             x = layer(x)
         return self.out_layer(x)
+        # return x

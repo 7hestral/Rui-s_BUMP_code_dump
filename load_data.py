@@ -109,7 +109,7 @@ def generate_csv_for_user(selected_user, preset_start_date=datetime(2009, 10, 12
     selected_data_edema.to_csv('/mnt/test3.csv')
     selected_data_oura_sleep = data_oura_sleep[data_oura_sleep['user_id'] == selected_user][['breath_average', 'date']]
     selected_data_oura_activity = data_oura_activity[data_oura_activity['user_id'] == selected_user][[
-    'cal_active',
+    # 'cal_active',
     'cal_total',
     'daily_movement',
     'high',
@@ -117,10 +117,10 @@ def generate_csv_for_user(selected_user, preset_start_date=datetime(2009, 10, 12
     #  'inactivity_alerts',
     'low',
     'medium',
-    'met_min_high',
-    'met_min_inactive',
-    'met_min_low',
-    'met_min_medium',
+    # 'met_min_high',
+    # 'met_min_inactive',
+    # 'met_min_low',
+    # 'met_min_medium',
     'non_wear',
     'rest',
     #  'rest_mode_state',

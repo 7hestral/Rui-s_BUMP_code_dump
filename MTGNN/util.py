@@ -5,6 +5,27 @@ import scipy.sparse as sp
 import torch
 from scipy.sparse import linalg
 from torch.autograd import Variable
+from typing import Dict, Iterable, Callable
+from torch import nn
+class FeatureExtractor(nn.Module):
+    def __init__(self, model, layers):
+        super().__init__()
+        self.model = model
+        self.layers = layers
+        self._features = {layer: torch.empty(0) for layer in layers}
+
+        for layer_id in layers:
+            layer = dict([*self.model.named_modules()])[layer_id]
+            layer.register_forward_hook(self.save_outputs_hook(layer_id))
+
+    def save_outputs_hook(self, layer_id):
+        def fn(_, __, output):
+            self._features[layer_id] = output
+        return fn
+
+    def forward(self, x):
+        _ = self.model(x)
+        return self._features
 
 def normal_std(x):
     return x.std() * np.sqrt((len(x) - 1.)/(len(x)))
@@ -301,7 +322,7 @@ def load_node_feature(path):
 def normal_std(x):
     return x.std() * np.sqrt((len(x) - 1.) / (len(x)))
 
-def min_max_normalization(original_df_lst, min_value_lst=None, max_value_lst=None):
+def min_max_normalization(original_df_lst, min_value_lst=None, max_value_lst=None, sub_symptom_idx=-1):
     # find min and max across population
     _, feature_size = original_df_lst[0].shape
     if min_value_lst is None:
@@ -315,11 +336,17 @@ def min_max_normalization(original_df_lst, min_value_lst=None, max_value_lst=Non
                     min_value_lst[target_feature] = curr_min
                 if max_value_lst[target_feature] < curr_max:
                     max_value_lst[target_feature] = curr_max
+        min_value_lst[sub_symptom_idx] = 1
+        max_value_lst[sub_symptom_idx] = 7
     normalized_data_lst = []
     for curr_user_mat in original_df_lst:
         for target_feature in range(feature_size):
+            if min_value_lst[target_feature] == max_value_lst[target_feature]:
+                max_value_lst[target_feature] += 1
             curr_user_mat[:, target_feature] = (curr_user_mat[:, target_feature] - min_value_lst[target_feature]) / (max_value_lst[target_feature] - min_value_lst[target_feature])
         normalized_data_lst.append(curr_user_mat)
+    if len(original_df_lst) == 1:
+        normalized_data_lst = normalized_data_lst[0]
     return normalized_data_lst, min_value_lst, max_value_lst
 
             
