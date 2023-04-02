@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 
 survey_question_to_question_id = {
+    'all': 159,
     'nausea': 203,
     'fatigue': 204, 
     'mood': 205, 
