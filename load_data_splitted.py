@@ -2,11 +2,15 @@ from src.utils import data_load
 import pandas as pd
 from src.s3_utils import pandas_from_csv_s3
 import numpy as np
-import os
 from datetime import datetime, timedelta
-from utils import get_survey_question
-data = data_load(data_keys={'bodyport', 'oura_activity', 'oura_sleep', "surveys"}, wave=7)
-df_birth = data_load(data_keys={"birth"}, wave=5)['birth']
+import seaborn as sns
+import matplotlib.pyplot as plt
+from utils import get_survey_question, na_rate
+from hyperimpute.plugins.imputers import Imputers
+import hyperimpute as hp
+import os
+
+
 
 
 
@@ -44,7 +48,7 @@ def get_usable_window(mask, window_size=21, tolerance=2):
                 i += window_size
     return result_windows
 
-def generate_csv_for_user(selected_user, preset_start_date=datetime(2009, 10, 12, 10, 10), preset_end_date=datetime(2030, 10, 12, 10, 10), file_name=''):
+def generate_csv_for_user(data, selected_user, preset_start_date=datetime(2009, 10, 12, 10, 10), preset_end_date=datetime(2030, 10, 12, 10, 10), file_name=''):
 
     # selected_user = 1441
     print(f"Curr user: {selected_user}")
@@ -159,7 +163,8 @@ def generate_csv_for_user(selected_user, preset_start_date=datetime(2009, 10, 12
 
 
 if __name__ == "__main__":
-
+    # data = data_load(data_keys={'bodyport', 'oura_activity', 'oura_sleep', "surveys"}, wave=7)
+    # df_birth = data_load(data_keys={"birth"}, wave=5)['birth']
 
     # counter = 0
     # available_user = []
@@ -174,5 +179,22 @@ if __name__ == "__main__":
     #             available_user.append(user)
     #             counter += result
 
+    user_dict = {}
 
-    # for each csv, normalize 
+    for f in os.listdir(os.path.join("/", "mnt", 'results', "edema_pred_window")):
+
+        f_name_lst = f.split('_')
+        if 'date' in f_name_lst:
+            continue
+        
+        user_id = int(f_name_lst[1])
+        if user_id in user_dict:
+            user_dict[user_id] += 1
+        else:
+            user_dict[user_id] = 1
+    print(user_dict)
+    s = []
+    for i in user_dict:
+        s.append(user_dict[i])
+    sns.histplot(s)
+    

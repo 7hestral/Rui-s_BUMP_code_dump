@@ -325,6 +325,8 @@ def normal_std(x):
 def min_max_normalization(original_df_lst, min_value_lst=None, max_value_lst=None, sub_symptom_idx=-1):
     # find min and max across population
     _, feature_size = original_df_lst[0].shape
+
+
     if min_value_lst is None:
         min_value_lst = [99999] * feature_size
         max_value_lst = [-99999] * feature_size
@@ -336,15 +338,18 @@ def min_max_normalization(original_df_lst, min_value_lst=None, max_value_lst=Non
                     min_value_lst[target_feature] = curr_min
                 if max_value_lst[target_feature] < curr_max:
                     max_value_lst[target_feature] = curr_max
-        min_value_lst[sub_symptom_idx] = 1
-        max_value_lst[sub_symptom_idx] = 7
+
     normalized_data_lst = []
+    min_value_lst[sub_symptom_idx] = 1
+    max_value_lst[sub_symptom_idx] = 6
     for curr_user_mat in original_df_lst:
         for target_feature in range(feature_size):
+                
             if min_value_lst[target_feature] == max_value_lst[target_feature]:
                 max_value_lst[target_feature] += 1
             curr_user_mat[:, target_feature] = (curr_user_mat[:, target_feature] - min_value_lst[target_feature]) / (max_value_lst[target_feature] - min_value_lst[target_feature])
         normalized_data_lst.append(curr_user_mat)
+
     if len(original_df_lst) == 1:
         normalized_data_lst = normalized_data_lst[0]
     return normalized_data_lst, min_value_lst, max_value_lst
