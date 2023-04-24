@@ -50,7 +50,7 @@ class LSTMClassifier(nn.Module):
                                        nn.Dropout(0.1),
                                        nn.Linear(self.hidden_size, self.n_state))
 
-    def forward(self, input, past_state=None, **kwargs):
+    def forward(self, input, past_state=None, CLS=False, **kwargs):
         input = input.to(self.device)
         self.rnn.to(self.device)
         self.regressor.to(self.device)
@@ -61,7 +61,10 @@ class LSTMClassifier(nn.Module):
             all_encodings, encoding = self.rnn(input, past_state)
         else:
             all_encodings, (encoding, state) = self.rnn(input, (past_state, past_state))
-        
+
+        if CLS:
+            return {'cls_emb': encoding.view(encoding.shape[1], -1), 'output': self.regressor(encoding.view(encoding.shape[1], -1))}
+
         if self.regres:
             if not self.return_all:
                 return self.regressor(encoding.view(encoding.shape[1], -1))

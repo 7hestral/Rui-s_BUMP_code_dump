@@ -66,7 +66,7 @@ torch.set_num_threads(3)
 adv_E_delay_epochs = 0
 adv_D_delay_epochs = 0
 num_epoch_discriminator = 30
-adv_weight = 1.3
+adv_weight = 0
 rse_weight = 1
 adv_weight_str = str(adv_weight).replace('.', 'dot')
 rse_weight_str = str(rse_weight).replace('.', 'dot')
@@ -83,7 +83,7 @@ def seed_everything(seed):
     torch.backends.cudnn.deterministic = False
     # torch.backends.cudnn.benchmark = False
     
-def plot_tsne(train_dataloader, val_dataloader, test_dataloader, model, epoch, name):
+def plot_tsne(train_dataloader, val_dataloader, test_dataloader, model, epoch, name, model_type, task_name):
     # gtnet_features = FeatureExtractor(model, layers=["end_conv_1"])
     output_lst = []
     edema_lst = []
@@ -98,8 +98,9 @@ def plot_tsne(train_dataloader, val_dataloader, test_dataloader, model, epoch, n
             user_label_lst.append(user_label)
             feature_size = X.shape[-1]
 
-            X = torch.unsqueeze(X,dim=1)
-            X = X.transpose(2,3)
+            if model_type == 'GNN':
+                X = torch.unsqueeze(X,dim=1)
+                X = X.transpose(2,3)
             edema_label = Y[:, -1].unsqueeze(-1).cpu().detach().numpy()
 
             edema_lst.append(edema_label)
@@ -107,6 +108,7 @@ def plot_tsne(train_dataloader, val_dataloader, test_dataloader, model, epoch, n
             num_data_lst[c] += X.shape[0]
             
             with torch.no_grad():
+
                 output = model(X, CLS=True)['cls_emb']
                 # print(output.shape)
                 output_lst.append(output.squeeze(-1).view(output.shape[0], -1).cpu().detach().numpy())
@@ -114,48 +116,49 @@ def plot_tsne(train_dataloader, val_dataloader, test_dataloader, model, epoch, n
     edema_lst = np.concatenate(edema_lst)
     all_embeddings = np.concatenate(output_lst, axis=0)
     all_user_label = np.concatenate(user_label_lst)
-    tsne = TSNE(n_components=2, verbose=1, perplexity=40, n_iter=300, random_state=42)
-    # tsne_results = tsne.fit_transform(pca_result)
-    tsne_results = tsne.fit_transform(all_embeddings)
-    df_tsne = pd.DataFrame(tsne_results, columns=["X", "Y"])
+    for perplexity in [10, 30, 40, 50, 60]:
+        tsne = TSNE(n_components=2, verbose=1, perplexity=perplexity, n_iter=300, random_state=42)
+        # tsne_results = tsne.fit_transform(pca_result)
+        tsne_results = tsne.fit_transform(all_embeddings)
+        df_tsne = pd.DataFrame(tsne_results, columns=["X", "Y"])
 
-    df_tsne["User_labels"] = all_user_label
-    df_tsne["User_labels"] = df_tsne["User_labels"].apply(lambda i: str(i))
+        df_tsne["User_labels"] = all_user_label
+        df_tsne["User_labels"] = df_tsne["User_labels"].apply(lambda i: str(i))
 
-    df_tsne["Training_set"] = [True] * num_data_lst[0] + [False] * (num_data_lst[1] + num_data_lst[2])
-    markers_dict = {
-        True: 'o',
-        False: 'X',
-    }
-    df_tsne["Edema_label"] = edema_lst
-    fig, axs = plt.subplots(ncols=2, figsize=(12, 12))
-    # plt.figure(figsize=(16,16))
-    axs[0].set(ylim=(-25, 25))
-    axs[0].set(xlim=(-25, 25))
-    axs[1].set(ylim=(-25, 25))
-    axs[1].set(xlim=(-25, 25))
-    sns.scatterplot(
-        x="X", y="Y",
-        hue="User_labels",
-        style="Training_set",
-        data=df_tsne,
-        legend="full", s=70,
-        alpha=0.9,
-        markers=markers_dict,
-        ax=axs[0]
-    )
-    sns.scatterplot(
-        x="X", y="Y",
-        hue="Edema_label",
-        style="Training_set",
-        data=df_tsne,
-        legend="full", s=70,
-        alpha=0.9,
-        markers=markers_dict,
-        ax=axs[1]
-    )
+        df_tsne["Training_set"] = [True] * num_data_lst[0] + [False] * (num_data_lst[1] + num_data_lst[2])
+        markers_dict = {
+            True: 'o',
+            False: 'X',
+        }
+        df_tsne["Edema_label"] = edema_lst
+        fig, axs = plt.subplots(ncols=2, figsize=(12, 12))
+        # plt.figure(figsize=(16,16))
+        axs[0].set(ylim=(-25, 25))
+        axs[0].set(xlim=(-25, 25))
+        axs[1].set(ylim=(-25, 25))
+        axs[1].set(xlim=(-25, 25))
+        sns.scatterplot(
+            x="X", y="Y",
+            hue="User_labels",
+            style="Training_set",
+            data=df_tsne,
+            legend="full", s=70,
+            alpha=0.9,
+            markers=markers_dict,
+            ax=axs[0]
+        )
+        sns.scatterplot(
+            x="X", y="Y",
+            hue="Edema_label",
+            style="Training_set",
+            data=df_tsne,
+            legend="full", s=70,
+            alpha=0.9,
+            markers=markers_dict,
+            ax=axs[1]
+        )
 
-    plt.savefig(os.path.join('/', 'mnt', 'results', 'plots', f'tsne_epoch{epoch}_adv{adv_weight_str}_l1{rse_weight_str}_{name}'))
+        plt.savefig(os.path.join('/', 'mnt', 'results', 'plots', f'tsne_epoch{epoch}_adv{adv_weight_str}_l1{rse_weight_str}_{name}_{model_type}_{task_name}_perplex{perplexity}'))
 
 def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
     model.eval()
@@ -173,8 +176,10 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
         if model_type == 'GNN':
             X = torch.unsqueeze(X,dim=1)
             X = X.transpose(2,3)
-        with torch.no_grad():
-            output = model(X)['output']
+            with torch.no_grad():
+                output = model(X)['output']
+        elif model_type == 'LSTM':
+            output = model(X)
         output = torch.squeeze(output)
         if len(output.shape)==1:
             output = output.unsqueeze(dim=0)
@@ -315,11 +320,16 @@ def main(user_dict, curr_slice, name, feature_lst, model_type="GNN", task_name='
 
     list_users = []
     for u in user_dict:
-        if curr_slice >= user_dict[u]: # not available for this user
+        # if curr_slice >= user_dict[u]: # not available for this user
+        #     continue
+        
+        file_name = f'/mnt/results/{task_name}/user_{u}_{task_name}_slice{curr_slice}.csv'
+        try:
+            curr_all_data = np.loadtxt(file_name, delimiter=',')[:, :-1] # exclude edema coarse label for now
+            list_users.append(u)
+        except OSError:
             continue
-        list_users.append(u)
-        file_name = f'/mnt/results/{task_name}/user_{u}_{task_name}_hyperimpute_slice{curr_slice}.csv'
-        curr_all_data = np.loadtxt(file_name, delimiter=',')[:, :-1] # exclude edema coarse label for now
+        
         # print(u)
         num_all_data, _ = curr_all_data.shape
         # val_split_idx = int(num_all_data * 0.6)
@@ -405,7 +415,7 @@ def main(user_dict, curr_slice, name, feature_lst, model_type="GNN", task_name='
     val_dataloader = DataLoader(aggregated_val_dataset, batch_size=args.batch_size, shuffle=False)
     test_dataloader = DataLoader(aggregated_test_dataset, batch_size=args.batch_size, shuffle=False)
     # args.data = f'/mnt/results/user_{selected_user}_activity_bodyport_hyperimpute.csv'
-    args.save = f'/mnt/results/model/model_{name}_{model_type}_adv{args.adv}_slice{curr_slice}.pt'
+    args.save = f'/mnt/results/model/model_{name}_{model_type}_adv{args.adv}_slice{curr_slice}_{task_name}.pt'
     print(vars(args))
 
     if model_type == "GNN":
@@ -501,7 +511,8 @@ def main(user_dict, curr_slice, name, feature_lst, model_type="GNN", task_name='
                 with open(args.save, 'wb') as f:
                     torch.save(model, f)
             if epoch % 20 == 0:
-                plot_tsne(train_dataloader, val_dataloader, test_dataloader, model, epoch, name)
+                plot_tsne(train_dataloader, val_dataloader, test_dataloader, model, epoch, name, model_type, task_name)
+
             # if epoch % 5 == 0:
             #     test_acc, test_rae, test_corr = evaluate(Data, Data.test[0], Data.test[1], model, evaluateL2, evaluateL1,
             #                                          args.batch_size)
@@ -610,8 +621,10 @@ if __name__ == "__main__":
     1757: 3, 2038: 2, 47: 1, 192: 3, 992: 3, 1715: 1, 2100: 1, 989: 2, 
     2032: 2, 407: 2, 1440: 1, 2160: 1, 190: 2, 2058: 1, 1750: 1, 1436: 1, 1393: 1, 1000: 1, 1431: 1, 289: 1}
     curr_slice = 3
+    model_type = 'LSTM'
+    task_name = "edema_pred_window_sorted"
     if curr_slice != 0:
-        previous_model = os.path.join('/', 'mnt', 'results', 'model', f'model_all_feat_0_advweight_1dot3_indinorm_slices{curr_slice-1}_GNN_advTrue_slice{curr_slice-1}.pt')
+        previous_model = os.path.join('/', 'mnt', 'results', 'model', f'model_all_feat_0_advweight_0_indinorm_slices{curr_slice-1}_{model_type}_advTrue_slice{curr_slice-1}_{task_name}.pt')
     else:
         previous_model = None
     # 42
@@ -619,7 +632,7 @@ if __name__ == "__main__":
     seed_everything(2139)
     for i in range(num_runs):
         val_acc, val_rae, val_corr, vfeat_corr, test_acc, test_rae, test_corr, test_feat_corr = main(user_dict, curr_slice, f'all_feat_{i}_advweight_{adv_weight_str}_indinorm_slices{curr_slice}', 
-        feature_lst=feature_name_lst, model_type='GNN', task_name="edema_pred_window", model_path=previous_model)
+        feature_lst=feature_name_lst, model_type=model_type, task_name=task_name, model_path=previous_model)
         vacc.append(val_acc)
         vrae.append(val_rae)
         vcorr.append(val_corr)
