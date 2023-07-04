@@ -23,6 +23,14 @@ from torch.autograd import Variable
 from pathlib import Path
 import random
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+class LogisticRegresser(torch.nn.Module):
+    def __init__(self, feature_size, hidden_size):
+        super(LogisticRegresser, self).__init__()
+        self.linear1 = torch.nn.Linear(feature_size, hidden_size)
+        self.linear2 = torch.nn.Linear(feature_size, hidden_size)
+    def forward(self, x):
+        outputs = torch.sigmoid(self.linear2(self.linear1(x)))
+        return outputs
 
 class LSTMClassifier(nn.Module):
     def __init__(self, feature_size, n_state, hidden_size, rnn="GRU", regres=True, bidirectional=False, return_all=False,

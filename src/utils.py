@@ -266,10 +266,15 @@ def data_load(data_keys={'oura_sleep', 'birth'}, wave=4):
         key = f'bump/redcap/wave_{wave}/phq9.csv.gz'
         df_phq9 = pandas_from_csv_s3(bucket, key=key, compression='gzip')
         dfs['phq9'] = df_phq9
-    if 'pitting_edema_cohort_2_only' in data_keys:
-        key = f'bump/redcap/wave_{wave}/pitting_edema_cohort_2_only.csv.gz'
+    if 'pitting_edema' in data_keys:
+        key = f'bump/redcap/wave_{wave}/pitting_edema.csv.gz'
         df_pitting_edema_cohort_2_only = pandas_from_csv_s3(bucket, key=key, compression='gzip')
-        dfs['pitting_edema_cohort_2_only'] = df_pitting_edema_cohort_2_only
+        dfs['pitting_edema'] = df_pitting_edema_cohort_2_only
+
+    # if 'pitting_edema_cohort_2_only' in data_keys:
+    #     key = f'bump/redcap/wave_{wave}/pitting_edema_cohort_2_only.csv.gz'
+    #     df_pitting_edema_cohort_2_only = pandas_from_csv_s3(bucket, key=key, compression='gzip')
+    #     dfs['pitting_edema_cohort_2_only'] = df_pitting_edema_cohort_2_only
     if 'risk_alert_trigger' in data_keys:
         key = f'bump/redcap/wave_{wave}/risk_alert_trigger.csv.gz'
         df_risk_alert_trigger = pandas_from_csv_s3(bucket, key=key, compression='gzip')

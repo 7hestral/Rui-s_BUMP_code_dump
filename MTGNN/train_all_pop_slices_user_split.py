@@ -1,7 +1,7 @@
 import argparse
 import math
 import time
-import csv
+
 import torch
 import torch.nn as nn
 from net import gtnet
@@ -13,10 +13,11 @@ from trainer import Optim
 from sequence_dataset import SequenceDataset
 from torch.utils.data import ConcatDataset
 from torch.utils.data import DataLoader 
-from model import LSTMClassifier, AdversarialDiscriminator, LogisticRegresser
+from model import LSTMClassifier, AdversarialDiscriminator
 from sklearn.manifold import TSNE
 import pandas as pd
 import seaborn as sns
+from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
 parser = argparse.ArgumentParser(description='PyTorch Time series forecasting')
 
@@ -32,7 +33,7 @@ parser.add_argument('--buildA_true', type=bool, default=True, help='whether to c
 parser.add_argument('--gcn_depth',type=int,default=2,help='graph convolution depth')
 parser.add_argument('--num_nodes',type=int,default=14,help='number of nodes/variables') # used to be 137 for solar
 parser.add_argument('--dropout',type=float,default=0.3,help='dropout rate')
-parser.add_argument('--subgraph_size',type=int,default=5,help='k') # used to be 20 by default
+parser.add_argument('--subgraph_size',type=int,default=14,help='k') # used to be 20 by default
 parser.add_argument('--node_dim',type=int,default=40,help='dim of nodes')
 parser.add_argument('--dilation_exponential',type=int,default=2,help='dilation exponential')
 parser.add_argument('--conv_channels',type=int,default=16,help='convolution channels')
@@ -66,8 +67,8 @@ torch.set_num_threads(3)
 adv_E_delay_epochs = 0
 adv_D_delay_epochs = 0
 num_epoch_discriminator = 30
-adv_weight = 0
-rse_weight = 1
+adv_weight = 1.5
+rse_weight = 0.7
 adv_weight_str = str(adv_weight).replace('.', 'dot')
 rse_weight_str = str(rse_weight).replace('.', 'dot')
 def weight_reset(m):
@@ -157,17 +158,17 @@ def plot_tsne(train_dataloader, val_dataloader, test_dataloader, model, epoch, n
             markers=markers_dict,
             ax=axs[1]
         )
-        print("save as ", os.path.join('/', 'mnt', 'results', 'plots', f'tsne_epoch{epoch}_adv{adv_weight_str}_l1{rse_weight_str}_{name}_{model_type}_{task_name}_perplex{perplexity}'))
+
         plt.savefig(os.path.join('/', 'mnt', 'results', 'plots', f'tsne_epoch{epoch}_adv{adv_weight_str}_l1{rse_weight_str}_{name}_{model_type}_{task_name}_perplex{perplexity}'))
-        plt.clf() 
-def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type, plot=False, plot_name=''):
+
+def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type):
     model.eval()
     total_loss = 0
     total_loss_l1 = 0
     n_samples = 0
     predict = None
     test = None
-    user_label_aggregate = None
+
     for batch_data in dataloader:
         X = batch_data['X'].to(device)
         Y = batch_data['Y'].to(device)
@@ -178,21 +179,17 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type, plot
             X = X.transpose(2,3)
             with torch.no_grad():
                 output = model(X)['output']
-        elif model_type == 'LSTM' or model_type == 'GRU':
+        elif model_type == 'LSTM':
             output = model(X)
         output = torch.squeeze(output)
         if len(output.shape)==1:
             output = output.unsqueeze(dim=0)
-        
-
         if predict is None:
             predict = output
             test = Y
-            user_label_aggregate = user_label
         else:
             predict = torch.cat((predict, output))
             test = torch.cat((test, Y))
-            user_label_aggregate = torch.cat((user_label_aggregate, user_label))
         
         total_loss += evaluateL2(output, Y).item()
         total_loss_l1 += evaluateL1(output, Y).item()
@@ -203,32 +200,6 @@ def evaluate(dataloader, model, evaluateL2, evaluateL1, device, model_type, plot
 
     predict = predict.data.cpu().numpy()
     Ytest = test.data.cpu().numpy()
-    user_label_aggregate = user_label_aggregate.data.cpu().numpy()
-    if plot:
-        # print(predict[:, -1])
-        
-        target_values = [0, 0.2, 0.4, 0.8, 1, 1.2]
-        rounded_predict = np.array([min(target_values, key=lambda x: abs(x - num)) for num in predict[:, -1]])
-        # print(rounded_predict)
-        # print(Ytest[:, -1])
-        # print(user_label_aggregate)
-        unique_users = np.unique(user_label_aggregate)
-        indices = [np.where(user_label_aggregate == value)[0] for value in unique_users]
-
-        user_specific_pred = [predict[:, -1][idx] for idx in indices]
-        user_specific_pred_rounded = [rounded_predict[idx] for idx in indices]
-        user_specific_Ytest = [Ytest[:, -1][idx] for idx in indices]
-        for i in range(len(unique_users)):
-            curr_user = unique_users[i]
-            x = list(range(len(user_specific_pred[i])))
-            plt.plot(x, user_specific_Ytest[i] * 5, label='True label')
-            plt.plot(x, user_specific_pred[i] * 5, label='Predicted label')
-            plt.plot(x, user_specific_pred_rounded[i] * 5, label='Rounded predicted label')
-            plt.legend()
-            plt.ylabel('Edema survey answer')
-            plt.ylim(ymax = 10, ymin = 0)
-            plt.savefig(os.path.join('/', 'mnt', 'results', 'result_plot', f'user{curr_user}adv_{adv_weight_str}_{plot_name}'))
-            plt.clf() 
     def get_correlation(predict, Ytest):
         sigma_p = (predict).std(axis=0)
         sigma_g = (Ytest).std(axis=0)
@@ -321,10 +292,9 @@ def train(dataloader, model, criterion, optim, device, model_type, epoch, optim_
             loss_total.backward()
             optim_E.step()
 
-        elif model_type == "LSTM" or model_type == "GRU":
+        elif model_type == "LSTM":
             output = model(X)
             output = torch.squeeze(output)
-            # loss = criterion(output[:, -1], Y[:, -1])
             loss = criterion(output, Y)
             loss.backward()
             train_loss_E_class += loss.item()
@@ -339,7 +309,7 @@ def train(dataloader, model, criterion, optim, device, model_type, epoch, optim_
     loss_dict = {'training_loss': train_loss_E_class, 'adv_loss_D': train_adv_loss_D, 'train_acc_D': 0 if n_samples == 0 else train_adv_correct_num/n_samples}
     return loss_dict
 
-def main(user_dict, curr_slice, name, feature_lst, model_type="GNN", task_name='edema_pred', print_feature_corr=True, model_path=None):
+def main(user_dict, curr_slice, name, feature_lst, training_user_lst, testing_user_lst, model_type="GNN", task_name='edema_pred', print_feature_corr=True, model_path=None):
     
     train_df_lst = []
     val_df_lst = []
@@ -349,105 +319,73 @@ def main(user_dict, curr_slice, name, feature_lst, model_type="GNN", task_name='
     val_dataset_lst = []
     test_dataset_lst = []
 
-    list_users = []
-    for u in user_dict:
-        # if curr_slice >= user_dict[u]: # not available for this user
-        #     continue
-        
-        file_name = f'/mnt/dataset/{task_name}/user_{u}_{task_name}_hyperimpute_slice{curr_slice}.csv'
+    list_users = [[], [], []]
 
-        try:
-            curr_all_data = np.loadtxt(file_name, delimiter=',')# [:, :-1] # exclude edema coarse label for now
-            list_users.append(u)
-        except OSError:
-            continue
+    df_lst = [[], [], []]
 
-   
+    for count, lst in enumerate([training_user_lst, testing_user_lst, testing_user_lst]):
 
-        
+        for u in lst:
+            # if curr_slice >= user_dict[u]: # not available for this user
+            #     continue
+            
+            file_name = f'/mnt/results/{task_name}/user_{u}_{task_name}_slice{curr_slice}.csv'
+            try:
+                curr_all_data = np.loadtxt(file_name, delimiter=',')[:, :-1] # exclude edema coarse label for now
+                list_users[count].append(u)
+            except OSError:
+                continue
+            
 
-        
-        # print(u)
-        num_all_data, _ = curr_all_data.shape
-        # val_split_idx = int(num_all_data * 0.6)
-        # test_split_idx = int(num_all_data * 0.8)
-        val_split_idx = 14
-        test_split_idx = 14
-
-        val_split_idx -= args.seq_in_len
-        test_split_idx -= args.seq_in_len
-
-        # test is the same as val for now
-        curr_train_data = curr_all_data[:val_split_idx, :].copy()
-        curr_val_data = curr_all_data[val_split_idx:, :].copy()
-        # curr_val_data = curr_all_data[val_split_idx:test_split_idx, :]
-        curr_test_data = curr_all_data[test_split_idx:, :].copy()
-
-        # print(curr_all_data.shape)
-        previous_data_file_name = f'/mnt/dataset/{task_name}/user_{u}_{task_name}_slice{curr_slice-1}.csv'
-        if os.path.exists(previous_data_file_name):
-            print(curr_train_data.shape)
-            prev_data = np.loadtxt(previous_data_file_name, delimiter=',')[-args.seq_in_len:, :-1]
-            curr_train_data = np.concatenate((prev_data, curr_train_data), axis=0)
-            print(curr_train_data.shape)
+            curr_all_data[:, -1] = curr_all_data[:, -1].astype(int)
 
 
-        curr_train_data[:, -1] = curr_train_data[:, -1].astype(int)
-        curr_val_data[:, -1] = curr_val_data[:, -1].astype(int)
-        curr_test_data[:, -1] = curr_test_data[:, -1].astype(int)
-        
-        # print(curr_train_data.shape)
-        # print(curr_val_data.shape)
-        # print(curr_test_data.shape)
-
-        train_df_lst.append(curr_train_data)
-        val_df_lst.append(curr_val_data)
-        test_df_lst.append(curr_test_data)
+            df_lst[count].append(curr_all_data)
 
     # normalization
 
-    # over all population
-    
+    train_df_lst = df_lst[0]
+    val_df_lst = df_lst[1]
+    test_df_lst = df_lst[2]
 
-    # normalized_train_df_lst, min_value_lst, max_value_lst = min_max_normalization(train_df_lst)
-    # normalized_val_df_lst, _, _ = min_max_normalization(val_df_lst, min_value_lst=min_value_lst, max_value_lst=max_value_lst)
-    # normalized_test_df_lst, _, _ = min_max_normalization(test_df_lst, min_value_lst=min_value_lst, max_value_lst=max_value_lst)
-    # print(normalized_train_df_lst[8][:, -1])
-    # return
+    # # over all population
+    normalized_train_df_lst, min_value_lst, max_value_lst = min_max_normalization(train_df_lst)
+    normalized_val_df_lst, _, _ = min_max_normalization(val_df_lst, min_value_lst=min_value_lst, max_value_lst=max_value_lst)
+    normalized_test_df_lst, _, _ = min_max_normalization(test_df_lst, min_value_lst=min_value_lst, max_value_lst=max_value_lst)
+    # print(normalized_val_df_lst[0])
+    # # over each individual, use only first 2 week data
+    # normalized_train_df_lst = []
+    # normalized_val_df_lst = []
+    # normalized_test_df_lst = []
+    # for i in range(len(list_users)):
+    #     curr_train_data = train_df_lst[i]
+    #     curr_val_data = val_df_lst[i]
+    #     curr_test_data = test_df_lst[i]
 
-    # over each individual, use only first 2 week data
-    normalized_train_df_lst = []
-    normalized_val_df_lst = []
-    normalized_test_df_lst = []
-    for i in range(len(list_users)):
-        curr_train_data = train_df_lst[i]
-        curr_val_data = val_df_lst[i]
-        curr_test_data = test_df_lst[i]
-
-        first_two_week = curr_train_data[:15, :]
-        rest = curr_train_data[15:, :]
-        curr_train_data[:, -1] = curr_train_data[:, -1].astype(int)
-        curr_val_data[:, -1] = curr_val_data[:, -1].astype(int)
-        curr_test_data[:, -1] = curr_test_data[:, -1].astype(int)
+    #     first_two_week = curr_train_data[:15, :]
+    #     rest = curr_train_data[15:, :]
+    #     curr_train_data[:, -1] = curr_train_data[:, -1].astype(int)
+    #     curr_val_data[:, -1] = curr_val_data[:, -1].astype(int)
+    #     curr_test_data[:, -1] = curr_test_data[:, -1].astype(int)
         
 
-        normalized_first_two_week, min_value_lst, max_value_lst = min_max_normalization([first_two_week])
-        normalized_rest, _, _ = min_max_normalization([rest], min_value_lst=min_value_lst, max_value_lst=max_value_lst)
+    #     normalized_first_two_week, min_value_lst, max_value_lst = min_max_normalization([first_two_week])
+    #     normalized_rest, _, _ = min_max_normalization([rest], min_value_lst=min_value_lst, max_value_lst=max_value_lst)
 
-        normalized_val, _, _ = min_max_normalization([curr_val_data], min_value_lst=min_value_lst, max_value_lst=max_value_lst)
-        normalized_test, _, _ = min_max_normalization([curr_test_data], min_value_lst=min_value_lst, max_value_lst=max_value_lst)
+    #     normalized_val, _, _ = min_max_normalization([curr_val_data], min_value_lst=min_value_lst, max_value_lst=max_value_lst)
+    #     normalized_test, _, _ = min_max_normalization([curr_test_data], min_value_lst=min_value_lst, max_value_lst=max_value_lst)
 
-        normalized_train = np.concatenate((normalized_first_two_week, normalized_rest), axis=0)
+    #     normalized_train = np.concatenate((normalized_first_two_week, normalized_rest), axis=0)
         
-        normalized_train_df_lst.append(normalized_train)
-        # print(normalized_train[:, -1])
+    #     normalized_train_df_lst.append(normalized_train)
+    #     # print(normalized_train[:, -1])
         
-        if np.sum(np.isnan(normalized_train)) > 0:
-            print(list_users[i])
+    #     if np.sum(np.isnan(normalized_train)) > 0:
+    #         print(list_users[i])
 
-        normalized_val_df_lst.append(normalized_val)
+    #     normalized_val_df_lst.append(normalized_val)
         
-        normalized_test_df_lst.append(normalized_test)
+    #     normalized_test_df_lst.append(normalized_test)
     
     
 
@@ -488,8 +426,8 @@ def main(user_dict, curr_slice, name, feature_lst, model_type="GNN", task_name='
         else:
             stored_model = torch.load(model_path)
             model.load_state_dict(stored_model.state_dict())
-    elif model_type == "LSTM" or model_type == 'GRU':
-        model = LSTMClassifier(feature_size=args.num_nodes, n_state=args.num_nodes, hidden_size=30, rnn=model_type)
+    elif model_type == "LSTM":
+        model = LSTMClassifier(feature_size=args.num_nodes, n_state=args.num_nodes, hidden_size=30, rnn='LSTM')
     model = model.to(device)
 
     print(args)
@@ -511,7 +449,7 @@ def main(user_dict, curr_slice, name, feature_lst, model_type="GNN", task_name='
         lr_ADV = 0.001  # learning rate for discriminator, used when ADV is True
         discriminator = AdversarialDiscriminator(
             d_model=args.end_channels * args.num_nodes,
-            n_cls=len(list_users)).to(device)
+            n_cls=len(list_users[0])).to(device)
 
         criterion_adv = nn.CrossEntropyLoss().to(device)  # consider using label smoothing
         optimizer_E = torch.optim.Adam(model.parameters(), lr=lr_ADV)
@@ -567,10 +505,9 @@ def main(user_dict, curr_slice, name, feature_lst, model_type="GNN", task_name='
             if epoch % 5 == 0:
                 with open(args.save, 'wb') as f:
                     torch.save(model, f)
-            if epoch % 20 == 0:
+            if epoch % 60 == 0:
                 plot_tsne(train_dataloader, val_dataloader, test_dataloader, model, epoch, name, model_type, task_name)
 
-        evaluate(val_dataloader, model, evaluateL2, evaluateL1, device, model_type, plot=True, plot_name=f'{model_type}_slice{curr_slice}.png')
             # if epoch % 5 == 0:
             #     test_acc, test_rae, test_corr = evaluate(Data, Data.test[0], Data.test[1], model, evaluateL2, evaluateL1,
             #                                          args.batch_size)
@@ -599,70 +536,16 @@ def main(user_dict, curr_slice, name, feature_lst, model_type="GNN", task_name='
     return vtest_acc, vtest_rae, vtest_corr, vfeat_corr_lst, test_acc, test_rae, test_corr, tfeat_corr_lst
 
 if __name__ == "__main__":
-    ## for emesis
-    # list_users_above_criteria = [
-    #     1032,
-    #     581,
-    #     407,
-    #     290,
-    #     1436,
-    #     1000,
-    #     95,
-    #     1386,
-    #     1431,
-    #     992,
-    #     1717,
-    #     1441,
-    #     122,
-    #     977,
-    #     293,
-    #     1700,
-    #     1744,
-    #     622,
-
-    #     192,
-    #     1373,
-    #     84,
-    #     1393,
-    #     1432,
-    #     1378,
-    #     225,
-    #     1753,
-    #     2084,
-    #     969,
-    #     280,
-    #     99,
-    #     53,
-    #     983,
-    #     2068,
-    #     193,
-    #     2056,
-    #     2016,
-    #     2109, 
-    #     1995,
-    #     1706,
-    #     2015,
-    #     186,
-    #     137,
-    #     1658,
-    #     2083,
-    #     1383,
-    #     429,
-    #     279]
-    # for edema
-    # feature_name_lst = [#'Active calories',
-    # 'Impedance magnitude','Impedance phase',
-    # 'Weight','Calories', 
-    # 'Daily movement','Minutes of high-intensity activity','Minutes of inactive',
-    # 'Minutes of low-intensity activity','Minutes of medium-intensity activity',
-    # # 'High-intensity MET',
-    # # 'Inactive MET',
-    # # 'Low-intensity MET',
-    # # 'Medium-intensity MET',
-    # 'Minutes of non-wear','Minutes of rest','Total daily steps',
-    # 'Respiratory rate','Edema']
-    feature_name_lst = ['daily_movement','high','inactive','low','medium','non_wear','rest','steps',
-    'breath_average','hr_average','rmssd','score','mood','fatigue']
+    feature_name_lst = [#'Active calories',
+    'Calories',
+    'Daily movement','Minutes of high-intensity activity','Minutes of inactive',
+    'Minutes of low-intensity activity','Minutes of medium-intensity activity',
+    # 'High-intensity MET',
+    # 'Inactive MET',
+    # 'Low-intensity MET',
+    # 'Medium-intensity MET',
+    'Minutes of non-wear','Minutes of rest','Total daily steps','Impedance magnitude','Impedance phase',
+    'Weight','Respiratory rate','Edema']
     vacc = []
     vrae = []
     vcorr = []
@@ -671,116 +554,99 @@ if __name__ == "__main__":
     corr = []
     feat_corr_lst = []
     test_feat_corr_lst = []
-    num_runs = 1
-    user_dict = {84: 2, 1400: 4, 1745: 4, 2174: 3, 1453: 1, 1374: 2, 2126: 3, 159: 4, 1717: 4, 1696: 4, 604: 4, 1714: 4, 
-    200: 3, 39: 1, 1989: 4, 407: 4, 2267: 4, 992: 4, 1658: 4, 47: 4, 2038: 3, 2061: 3, 2151: 3, 2102: 2, 2066: 4, 1038: 2, 
-    74: 1, 28: 4, 594: 1, 2018: 1, 622: 2, 989: 3, 1743: 2, 2031: 3, 1378: 4, 185: 4, 1996: 3, 2134: 4, 186: 4, 1387: 4, 
-    174: 4, 1440: 1, 2062: 2, 1724: 4, 980: 4, 2001: 4, 66: 1, 1744: 3, 234: 2, 1393: 1, 1032: 4, 1403: 3, 290: 4, 55: 3, 
-    1436: 1, 291: 1, 983: 2, 122: 1, 289: 4, 1731: 3, 2109: 4, 1709: 3, 1708: 4, 1747: 4, 53: 4, 1425: 3, 969: 4, 64: 4, 
-    987: 2, 581: 4, 1993: 1, 2084: 1, 1373: 2, 38: 3, 280: 1, 1426: 4, 1695: 3, 2159: 4, 2120: 2, 190: 3, 1702: 1, 137: 2, 
-    1037: 4, 404: 4, 279: 1, 29: 2, 429: 2, 118: 4, 2142: 3, 2176: 2, 2056: 4, 2080: 4, 1429: 4, 1366: 3, 1988: 1, 2065: 3, 
-    1712: 1, 1432: 1, 603: 2, 1976: 4, 2019: 1, 977: 4, 2113: 3, 991: 2, 1728: 2, 615: 4, 1997: 1, 1427: 2, 1367: 1, 1000: 2, 
-    158: 1, 192: 3, 168: 4, 410: 1, 428: 2, 135: 2, 2015: 3, 2083: 4, 199: 2, 2058: 3, 1700: 1, 193: 3, 95: 3, 1386: 2, 2169: 3, 
-    1755: 1, 2041: 4, 1369: 4, 1716: 4, 1757: 3, 1389: 4, 2212: 1, 2068: 2, 173: 4, 1985: 3, 2160: 2, 1715: 1, 2032: 3, 68: 1, 293: 1, 1750: 1, 966: 3, 1021: 2, 1697: 1, 2166: 1, 405: 1, 
-    2158: 2, 2016: 1, 1431: 1, 1999: 1, 30: 2, 79: 1, 62: 1, 2076: 1, 602: 1}
+    num_runs = 5
+    user_dict = {604: 3, 186: 4, 2267: 3, 2109: 4, 173: 4, 410: 1, 95: 3, 1976: 2, 28: 4, 168: 4, 1426: 
+    4, 2001: 3, 55: 3, 2142: 3, 1389: 3, 1714: 4, 118: 4, 2102: 2, 2066: 3, 581: 4, 38: 2, 1400: 1, 
+    983: 2, 137: 2, 74: 1, 64: 4, 404: 2, 2151: 1, 1717: 2, 159: 4, 1708: 4, 2159: 4, 1021: 2, 1989: 4, 
+    135: 3, 991: 2, 2015: 2, 428: 2, 193: 3, 1747: 3, 1985: 2, 969: 2, 2169: 3, 174: 2, 980: 4, 2056: 4, 
+    66: 1, 290: 4, 1744: 3, 1373: 1, 1709: 3, 1658: 3, 2083: 3, 2174: 2, 2134: 2, 2068: 1, 2080: 3, 1716: 4, 
+    30: 2, 1745: 1, 2061: 3, 977: 3, 2113: 3, 2041: 3, 966: 1, 2176: 2, 987: 2, 1429: 4, 1696: 4, 429: 1, 185: 3, 
+    2126: 2, 1038: 1, 1724: 4, 2065: 3, 293: 1, 39: 1, 1427: 2, 234: 1, 53: 4, 603: 1, 1728: 2, 1988: 1, 1367: 1, 
+    1757: 3, 2038: 2, 47: 1, 192: 3, 992: 3, 1715: 1, 2100: 1, 989: 2, 
+    2032: 2, 407: 2, 1440: 1, 2160: 1, 190: 2, 2058: 1, 1750: 1, 1436: 1, 1393: 1, 1000: 1, 1431: 1, 289: 1}
 
-    for curr_slice in range(4):
-        # curr_slice = 2
-        vacc = []
-        vrae = []
-        vcorr = []
-        acc = []
-        rae = []
-        corr = []
-        feat_corr_lst = []
-        test_feat_corr_lst = []
-        model_type = 'GNN'
-        
-        task_name = "stress"
-        # if curr_slice != 0 and model_type == 'GNN':
-        #     previous_model = os.path.join('/', 'mnt', 'results', 'model', f'model_all_feat_0_advweight_{adv_weight_str}_indinorm_slices{curr_slice-1}_{model_type}_advTrue_slice{curr_slice-1}_{task_name}.pt')
-        # else:
-        #     previous_model = None
-        
-        previous_model = None
-        # 42
-        # torch.manual_seed(2139)
-        seed_everything(2139)
-        
-        for i in range(num_runs):
-            model_name = f'all_feat_{i}_advweight_{adv_weight_str}_indinorm_slices{curr_slice}'
-            val_acc, val_rae, val_corr, vfeat_corr, test_acc, test_rae, test_corr, test_feat_corr = main(user_dict, curr_slice, model_name, 
-            feature_lst=feature_name_lst, model_type=model_type, task_name=task_name, model_path=previous_model)
-            vacc.append(val_acc)
-            vrae.append(val_rae)
-            vcorr.append(val_corr)
-            feat_corr_lst.append(vfeat_corr)
-            acc.append(test_acc)
-            rae.append(test_rae)
-            corr.append(test_corr)
-            test_feat_corr_lst.append(test_feat_corr)
-        print('\n\n')
-        print(f'{num_runs} runs average')
-        print('\n\n')
-        print("valid\trse\trae\tcorr")
-        print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(vacc), np.mean(vrae), np.mean(vcorr)))
-        print("std\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.std(vacc), np.std(vrae), np.std(vcorr)))
+    skf = StratifiedKFold(n_splits=num_runs, random_state=42, shuffle=True)
+    user_xs = list(user_dict.keys())
+    user_ys = list(user_dict.values())
 
 
-        # feat_str = 'valid\t'
-        # mean_str = 'mean\t'
-        # std_str = 'std\t'
-        # for feat in feature_name_lst:
-        #     feat_str += feat + '\t'
-        # for i in range(mean_feat_corr_lst.shape[0]):
-        #     mean_str += ("{:5.4f}\t".format(mean_feat_corr_lst[i]))
-        #     std_str += ("{:5.4f}\t".format(std_feat_corr_lst[i]))
-
-        feat_corr_lst = np.vstack(feat_corr_lst)
-        mean_feat_corr_lst = np.mean(feat_corr_lst, axis=0)
-        std_feat_corr_lst = np.std(feat_corr_lst, axis=0)
-        feat_str = 'valid&'
-        mean_str = 'mean&'
-        std_str = 'std&'
-        for feat in feature_name_lst:
-            feat_str += feat + '&'
-        for i in range(mean_feat_corr_lst.shape[0]):
-            mean_str += ("${:5.4f}\pm{:5.4f}$&".format(mean_feat_corr_lst[i], std_feat_corr_lst[i]))
-            # std_str += ("{:5.4f}&".format(std_feat_corr_lst[i]))
-        print('\n\n')
-        print(feat_str)
-        print(mean_str)
-        # print(std_str)
-        print('-'*10, 'test', '-' * 10)
-        feat_corr_lst = np.vstack(test_feat_corr_lst)
-        mean_feat_corr_lst = np.mean(test_feat_corr_lst, axis=0)
-        std_feat_corr_lst = np.std(test_feat_corr_lst, axis=0)
-        feat_str = 'test&'
-        mean_str = 'mean&'
-        std_str = 'std&'
-        for feat in feature_name_lst:
-            feat_str += feat + '&'
-        for i in range(mean_feat_corr_lst.shape[0]):
-            mean_str += ("${:5.4f}\pm{:5.4f}$&".format(mean_feat_corr_lst[i], std_feat_corr_lst[i]))
-            # std_str += ("{:5.4f}&".format(std_feat_corr_lst[i]))
-        print('\n\n')
-        print(feat_str)
-        print(mean_str)
-        with open(os.path.join('/', 'mnt', 'results', 'result_txts', f'{model_name}_{model_type}_{task_name}.txt'), 'w', newline='') as f:
-            f.write(feat_str)
-            f.write('\n\n')
-            f.write(mean_str)
 
 
-        result_data = [feature_name_lst, mean_feat_corr_lst, std_feat_corr_lst]
-        data_t = list(map(list, zip(*result_data)))
-        headers = ['feature name', 'mean', 'std']
-        with open(os.path.join('/', 'mnt', 'results', 'result_csvs', f'{model_name}_{model_type}_{task_name}.csv'), 'w', newline='') as csvfile:
-            # create a CSV writer object
-            writer = csv.writer(csvfile)
-            
-            # write the header row to the CSV file
-            writer.writerow(headers)
-            
-            # write the data to the CSV file
-            writer.writerows(data_t)
+
+
+
+
+    curr_slice = 0
+    model_type = 'GRU'
+    task_name = "edema_pred_window_sorted"
+
+    # 42
+    # torch.manual_seed(2139)
+    seed_everything(2139)
+
+    for i, (train_index, test_index) in enumerate(skf.split(user_xs, user_ys)):
+        train_user_lst = [user_xs[i] for i in train_index]
+        test_user_lst = [user_xs[i] for i in test_index]
+        print([user_ys[i] for i in test_index])
+        if curr_slice != 0:
+            previous_model = os.path.join('/', 'mnt', 'results', 'model', f'model_all_feat_user_split_{i}_advweight_1dot5_indinorm_slices{curr_slice-1}_{model_type}_advTrue_slice{curr_slice-1}_{task_name}.pt')
+        else:
+            previous_model = None
+
+        val_acc, val_rae, val_corr, vfeat_corr, test_acc, test_rae, test_corr, test_feat_corr = main(user_dict, curr_slice, f'all_feat_user_split_{i}_advweight_{adv_weight_str}_indinorm_slices{curr_slice}', 
+        feature_lst=feature_name_lst, training_user_lst=train_user_lst, testing_user_lst=test_user_lst, model_type=model_type, task_name=task_name, model_path=previous_model)
+        vacc.append(val_acc)
+        vrae.append(val_rae)
+        vcorr.append(val_corr)
+        feat_corr_lst.append(vfeat_corr)
+        acc.append(test_acc)
+        rae.append(test_rae)
+        corr.append(test_corr)
+        test_feat_corr_lst.append(test_feat_corr)
+    print('\n\n')
+    print(f'{num_runs} runs average')
+    print('\n\n')
+    print("valid\trse\trae\tcorr")
+    print("mean\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.mean(vacc), np.mean(vrae), np.mean(vcorr)))
+    print("std\t{:5.4f}\t{:5.4f}\t{:5.4f}".format(np.std(vacc), np.std(vrae), np.std(vcorr)))
+
+
+    # feat_str = 'valid\t'
+    # mean_str = 'mean\t'
+    # std_str = 'std\t'
+    # for feat in feature_name_lst:
+    #     feat_str += feat + '\t'
+    # for i in range(mean_feat_corr_lst.shape[0]):
+    #     mean_str += ("{:5.4f}\t".format(mean_feat_corr_lst[i]))
+    #     std_str += ("{:5.4f}\t".format(std_feat_corr_lst[i]))
+
+    feat_corr_lst = np.vstack(feat_corr_lst)
+    mean_feat_corr_lst = np.mean(feat_corr_lst, axis=0)
+    std_feat_corr_lst = np.std(feat_corr_lst, axis=0)
+    feat_str = 'valid&'
+    mean_str = 'mean&'
+    std_str = 'std&'
+    for feat in feature_name_lst:
+        feat_str += feat + '&'
+    for i in range(mean_feat_corr_lst.shape[0]):
+        mean_str += ("${:5.4f}\pm{:5.4f}$&".format(mean_feat_corr_lst[i], std_feat_corr_lst[i]))
+        # std_str += ("{:5.4f}&".format(std_feat_corr_lst[i]))
+    print('\n\n')
+    print(feat_str)
+    print(mean_str)
+    # print(std_str)
+    print('-'*10, 'test', '-' * 10)
+    feat_corr_lst = np.vstack(test_feat_corr_lst)
+    mean_feat_corr_lst = np.mean(test_feat_corr_lst, axis=0)
+    std_feat_corr_lst = np.std(test_feat_corr_lst, axis=0)
+    feat_str = 'test&'
+    mean_str = 'mean&'
+    std_str = 'std&'
+    for feat in feature_name_lst:
+        feat_str += feat + '&'
+    for i in range(mean_feat_corr_lst.shape[0]):
+        mean_str += ("${:5.4f}\pm{:5.4f}$&".format(mean_feat_corr_lst[i], std_feat_corr_lst[i]))
+        # std_str += ("{:5.4f}&".format(std_feat_corr_lst[i]))
+    print('\n\n')
+    print(feat_str)
+    print(mean_str)

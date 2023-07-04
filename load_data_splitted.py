@@ -60,21 +60,34 @@ def generate_csv_for_user(data, selected_user, preset_start_date=datetime(2009, 
     data_oura_sleep = data['oura_sleep']
     # data_survey = data['surveys']
     # survey_question_str = 'swollen'
-    selected_data_bodyport = data_bodyport[data_bodyport['user_id'] == selected_user][['date', 
-    # 'impedance_ratio', 
-    # 'peripheral_fluid', 
-    'impedance_mag_1_ohms', 'impedance_phase_1_degs', 
-    'weight_kg']].groupby("date", as_index = False).first()
-    edema_csv_path = f'/mnt/results/edema_coarse_label/user_{selected_user}_edema_coarse_label.csv'
-    if not os.path.exists(edema_csv_path):
-        print("Empty Edema")
-        return
-    selected_data_edema = pd.read_csv(edema_csv_path).groupby("date", as_index = False).first()
 
-    selected_data_oura_sleep = data_oura_sleep[data_oura_sleep['user_id'] == selected_user][['breath_average', 'date']]
+    # selected_data_bodyport = data_bodyport[data_bodyport['user_id'] == selected_user][['date', 
+    # # 'impedance_ratio', 
+    # # 'peripheral_fluid', 
+    # 'impedance_mag_1_ohms', 'impedance_phase_1_degs', 
+    # 'weight_kg']].groupby("date", as_index = False).first()
+
+    # generated from relabel_edema.ipynb
+    survey_question_str_lst = ['mood', 'fatigue']
+    # edema_csv_path = f'/mnt/results/edema_coarse_label/user_{selected_user}_edema_coarse_label.csv'
+    # if not os.path.exists(edema_csv_path):
+    #     print("Empty Edema")
+    #     return
+    selected_data_survey_lst = []
+    for q_str in survey_question_str_lst:
+        csv_path = f'/mnt/dataset/{q_str}/user_{selected_user}_{q_str}_label.csv'
+        if not os.path.exists(csv_path):
+            print(f"Empty {q_str}")
+            return
+        selected_data_survey_lst.append(pd.read_csv(csv_path).groupby("date", as_index = False).first())
+
+
+    selected_data_oura_sleep = data_oura_sleep[data_oura_sleep['user_id'] == selected_user][['breath_average',
+    'hr_average', 'rmssd', 'score',
+    'date']]
     selected_data_oura_activity = data_oura_activity[data_oura_activity['user_id'] == selected_user][[
     # 'cal_active',
-    'cal_total',
+    # 'cal_total',
     'daily_movement',
     'high',
     'inactive',
@@ -91,21 +104,22 @@ def generate_csv_for_user(data, selected_user, preset_start_date=datetime(2009, 
     def get_max_date(df):
         return np.max(df['date'].astype('datetime64'))
     
-    if not len(selected_data_bodyport):
-        print("Empty bodyport")
-        return
+    # if not len(selected_data_bodyport):
+    #     print("Empty bodyport")
+    #     return
     if not len(selected_data_oura_activity):
         print("Empty Oura activity")
         return
-    if not len(selected_data_edema):
-        print("Empty Edema")
-        return
+    # if not len(selected_data_edema):
+    #     print("Empty Edema")
+    #     return
     if not len(selected_data_oura_sleep):
         print("Empty Oura sleep")
         return
-
-    overall_min_date = np.max(list(map(get_min_date, (selected_data_edema, selected_data_bodyport, selected_data_oura_activity, selected_data_oura_sleep))) + [preset_start_date])
-    overall_max_date = np.min(list(map(get_max_date, (selected_data_edema, selected_data_bodyport, selected_data_oura_activity, selected_data_oura_sleep))) + [preset_end_date])
+    ds_lst = [# selected_data_edema, #selected_data_bodyport, 
+    selected_data_oura_activity, selected_data_oura_sleep] + selected_data_survey_lst
+    overall_min_date = np.max(list(map(get_min_date, ds_lst)) + [preset_start_date])
+    overall_max_date = np.min(list(map(get_max_date, ds_lst)) + [preset_end_date])
     
     date_range = pd.date_range(overall_min_date, overall_max_date, freq='d')
     print(overall_max_date-overall_min_date)
@@ -119,17 +133,21 @@ def generate_csv_for_user(data, selected_user, preset_start_date=datetime(2009, 
         df['date'] = df['date'].astype('datetime64')
         return pd.merge(date_df, df, how='left')
 
-    selected_data_edema = change_date_type(selected_data_edema)
-    selected_data_oura_activity = change_date_type(selected_data_oura_activity)
-    selected_data_oura_sleep = change_date_type(selected_data_oura_sleep)
-    selected_data_bodyport = change_date_type(selected_data_bodyport)
+    # selected_data_edema = change_date_type(selected_data_edema)
+    for i in range(len(ds_lst)):
+        ds_lst[i] = change_date_type(ds_lst[i])
+    # selected_data_oura_activity = change_date_type(selected_data_oura_activity)
+    # selected_data_oura_sleep = change_date_type(selected_data_oura_sleep)
+    # selected_data_bodyport = change_date_type(selected_data_bodyport)
 
     unimputed_df = pd.DataFrame()
     unimputed_df['date'] = date_range
-    unimputed_df = pd.merge(unimputed_df, selected_data_bodyport, how='left')
-    unimputed_df = pd.merge(unimputed_df, selected_data_oura_activity, how='left')
-    unimputed_df = pd.merge(unimputed_df, selected_data_oura_sleep, how='left')
-    unimputed_df = pd.merge(unimputed_df, selected_data_edema, how='left')
+    # unimputed_df = pd.merge(unimputed_df, selected_data_bodyport, how='left')
+    # unimputed_df = pd.merge(unimputed_df, selected_data_oura_activity, how='left')
+    # unimputed_df = pd.merge(unimputed_df, selected_data_oura_sleep, how='left')
+    # unimputed_df = pd.merge(unimputed_df, selected_data_edema, how='left')
+    for i in range(len(ds_lst)):
+        unimputed_df = pd.merge(unimputed_df, ds_lst[i], how='left')
 
     missingness_mask = unimputed_df.isna()
     missingness_mask = np.sum(missingness_mask, axis=1)
@@ -144,8 +162,8 @@ def generate_csv_for_user(data, selected_user, preset_start_date=datetime(2009, 
 
 
 
-    if not os.path.exists(os.path.join('/', 'mnt', 'results', root_folder)):
-        os.mkdir(os.path.join('/', 'mnt', 'results', root_folder))
+    if not os.path.exists(os.path.join('/', 'mnt', 'dataset', root_folder)):
+        os.mkdir(os.path.join('/', 'mnt', 'dataset', root_folder))
     # save the windows
     for count, w in enumerate(window_lst):
         curr_window = unimputed_df[w[0]:w[1]]
@@ -153,48 +171,48 @@ def generate_csv_for_user(data, selected_user, preset_start_date=datetime(2009, 
         # print(np.sum(X.isna()))
         # print(X.shape)
         curr_window = plugin.fit_transform(X.copy())
-        curr_window.to_csv(f'/mnt/results/{root_folder}/user_{selected_user}_{file_name}_hyperimpute_slice{count}.csv', index=False, header=False)
+        curr_window.to_csv(f'/mnt/dataset/{root_folder}/user_{selected_user}_{file_name}_hyperimpute_slice{count}.csv', index=False, header=False)
 
         hyperimputed_df_with_date = curr_window.copy()
         hyperimputed_df_with_date['date'] = date_range[w[0]:w[1]]
-        hyperimputed_df_with_date.to_csv(f'/mnt/results/{root_folder}/user_{selected_user}_{file_name}_hyperimpute_with_date_slice{count}.csv', index=False)
+        hyperimputed_df_with_date.to_csv(f'/mnt/dataset/{root_folder}/user_{selected_user}_{file_name}_hyperimpute_with_date_slice{count}.csv', index=False)
 
     return len(window_lst)
 
 
 if __name__ == "__main__":
-    # data = data_load(data_keys={'bodyport', 'oura_activity', 'oura_sleep', "surveys"}, wave=7)
-    # df_birth = data_load(data_keys={"birth"}, wave=5)['birth']
+    data = data_load(data_keys={'bodyport', 'oura_activity', 'oura_sleep', "surveys"}, wave=7)
+    df_birth = data_load(data_keys={"birth"}, wave=5)['birth']
 
-    # counter = 0
-    # available_user = []
-    # for user in df_birth['user_id'].unique():
-    #     user = int(user)
-    #     if len(df_birth[df_birth.user_id == user].birth_date):
-    #         curr_birth_date = pd.to_datetime(df_birth[df_birth.user_id == user].birth_date.values[0])
-    #         # only interested in the 3rd trimester
-    #         third_trimester_start_date = curr_birth_date - timedelta(days=91)
-    #         result = generate_csv_for_user(user, preset_start_date=third_trimester_start_date, preset_end_date=curr_birth_date, file_name='edema_pred_window')
-    #         if result:
-    #             available_user.append(user)
-    #             counter += result
+    counter = 0
+    available_user = []
+    for user in df_birth['user_id'].unique():
+        user = int(user)
+        if len(df_birth[df_birth.user_id == user].birth_date):
+            curr_birth_date = pd.to_datetime(df_birth[df_birth.user_id == user].birth_date.values[0])
+            # only interested in the 3rd trimester
+            third_trimester_start_date = curr_birth_date - timedelta(days=91)
+            result = generate_csv_for_user(data, user, preset_start_date=third_trimester_start_date, preset_end_date=curr_birth_date, file_name='stress')
+            if result:
+                available_user.append(user)
+                counter += result
 
-    user_dict = {}
+    # user_dict = {}
 
-    for f in os.listdir(os.path.join("/", "mnt", 'results', "edema_pred_window")):
+    # for f in os.listdir(os.path.join("/", "mnt", 'results', "edema_pred_window")):
 
-        f_name_lst = f.split('_')
-        if 'date' in f_name_lst:
-            continue
+    #     f_name_lst = f.split('_')
+    #     if 'date' in f_name_lst:
+    #         continue
         
-        user_id = int(f_name_lst[1])
-        if user_id in user_dict:
-            user_dict[user_id] += 1
-        else:
-            user_dict[user_id] = 1
-    print(user_dict)
-    s = []
-    for i in user_dict:
-        s.append(user_dict[i])
-    sns.histplot(s)
+    #     user_id = int(f_name_lst[1])
+    #     if user_id in user_dict:
+    #         user_dict[user_id] += 1
+    #     else:
+    #         user_dict[user_id] = 1
+    # print(user_dict)
+    # s = []
+    # for i in user_dict:
+    #     s.append(user_dict[i])
+    # sns.histplot(s)
     
