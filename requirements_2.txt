@@ -20,7 +20,7 @@ requests==2.29.0
 scipy==1.11.1
 setuptools==67.8.0
 sympy==1.11.1
-torch==1.7.1+cu110
+torch==1.7.1
 typing_extensions==4.6.3
 urllib3==1.26.16
 wheel==0.38.4
